@@ -1,0 +1,10 @@
+services:
+  test:
+    build: . # Build from the Dockerfile in the current directory
+    # You might need to adjust the volumes, depending on your project structure
+    volumes:
+      - .:/app # Mount the project directory into the container.  This is useful for development so that changes to your code are immediately reflected in the container.
+    #  command: pytest /app/tests # No need for this, we have ENTRYPOINT in Dockerfile
+    working_dir: /app
+    environment: #add any environment variable
+      - PYTHONPATH=/app
