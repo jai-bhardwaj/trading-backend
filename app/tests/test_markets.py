@@ -1,6 +1,8 @@
 # tests/test_markets.py
-from ..markets import Market, NSE_AngelOne, BSE_AngelOne
 import pytest
+
+from app.markets.markets import BSE_AngelOne, Market, NSE_AngelOne
+
 
 def test_market_creation():
     """Test that a Market object can be created correctly."""
@@ -11,7 +13,7 @@ def test_market_creation():
         currency="TST",
         trading_hours="09:00 - 17:00",
         instruments=["EQ", "FUT"],
-        api_endpoint="https://test.com/api"
+        api_endpoint="https://test.com/api",
     )
     assert market.name == "Test Market"
     assert market.exchange == "TM"
@@ -20,6 +22,7 @@ def test_market_creation():
     assert market.trading_hours == "09:00 - 17:00"
     assert market.instruments == ["EQ", "FUT"]
     assert market.api_endpoint == "https://test.com/api"
+
 
 def test_predefined_markets():
     """Test that the predefined NSE_AngelOne and BSE_AngelOne markets are set up correctly."""
@@ -38,10 +41,18 @@ def test_predefined_markets():
     assert BSE_AngelOne.instruments == ["EQ", "FUT", "OPT", "ETF"]
     assert BSE_AngelOne.api_endpoint == "https://api.angelbroking.com/rest/secure/v3/"
 
+
 def test_market_string_representation():
     """Test the __str__ method of the Market class."""
     market = NSE_AngelOne
     expected_string = "National Stock Exchange (via Angel One) (NSE, India) - Trading Hours: 09:15 - 15:30 IST (via Angel One)"
     assert str(market) == expected_string
 
+
 # You can add more test functions to cover other aspects of the markets module
+
+
+# Add your market tests here
+def test_market_initialization():
+    # Test market initialization
+    pass

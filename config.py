@@ -1,11 +1,15 @@
 # config.py
 import os
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file in the project root
-dotenv_path = os.path.join(os.path.dirname(__file__), '.env') # Construct path relative to config.py
+dotenv_path = os.path.join(
+    os.path.dirname(__file__), ".env"
+)  # Construct path relative to config.py
 load_dotenv(dotenv_path=dotenv_path)
-print(f"Loading .env from: {dotenv_path}") # Debug print
+print(f"Loading .env from: {dotenv_path}")  # Debug print
+
 
 class Settings:
     PROJECT_NAME: str = "Modular Trading Backend"
@@ -39,20 +43,31 @@ class Settings:
         # }
     }
 
+
 settings = Settings()
 
 # --- Basic Logging Setup ---
 import logging
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
 # --- Validate Essential Config ---
 # Ensure critical Angel One config is present if intended to be used
-if not all([settings.ANGELONE_API_KEY, settings.ANGELONE_CLIENT_ID, settings.ANGELONE_PASSWORD, settings.ANGELONE_TOTP_SECRET]):
-     logger.warning("One or more Angel One credentials (API_KEY, CLIENT_ID, PASSWORD, TOTP_SECRET) are missing in the environment variables (.env file). Angel One integration will likely fail.")
+if not all(
+    [
+        settings.ANGELONE_API_KEY,
+        settings.ANGELONE_CLIENT_ID,
+        settings.ANGELONE_PASSWORD,
+        settings.ANGELONE_TOTP_SECRET,
+    ]
+):
+    logger.warning(
+        "One or more Angel One credentials (API_KEY, CLIENT_ID, PASSWORD, TOTP_SECRET) are missing in the environment variables (.env file). Angel One integration will likely fail."
+    )
 else:
-     logger.info("Angel One credentials appear to be loaded from environment.")
+    logger.info("Angel One credentials appear to be loaded from environment.")

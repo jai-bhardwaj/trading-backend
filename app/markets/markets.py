@@ -1,6 +1,7 @@
 # markets.py
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict, List
+
 
 @dataclass
 class Market:
@@ -11,10 +12,11 @@ class Market:
     trading_hours: str
     instruments: List[str]
     api_endpoint: str  # Changed to Angel One API
-    broker: str = "Angel One" # Add Broker
+    broker: str = "Angel One"  # Add Broker
 
     def __str__(self):
         return f"{self.name} ({self.exchange}, {self.country}) - Trading Hours: {self.trading_hours} (via {self.broker})"
+
 
 # Predefined Markets via Angel One
 NSE_AngelOne = Market(
@@ -24,7 +26,7 @@ NSE_AngelOne = Market(
     currency="INR",
     trading_hours="09:15 - 15:30 IST",
     instruments=["EQ", "FUT", "OPT", "ETF"],
-    api_endpoint="https://api.angelbroking.com/rest/secure/v3/"  #  Angel One API endpoint (Base URL -  check for the most up-to-date version)
+    api_endpoint="https://api.angelbroking.com/rest/secure/v3/",  #  Angel One API endpoint (Base URL -  check for the most up-to-date version)
 )
 
 BSE_AngelOne = Market(
@@ -34,7 +36,7 @@ BSE_AngelOne = Market(
     currency="INR",
     trading_hours="09:15 - 15:30 IST",
     instruments=["EQ", "FUT", "OPT", "ETF"],
-    api_endpoint="https://api.angelbroking.com/rest/secure/v3/" # Angel One API endpoint (Base URL - check for the most up-to-date version)
+    api_endpoint="https://api.angelbroking.com/rest/secure/v3/",  # Angel One API endpoint (Base URL - check for the most up-to-date version)
 )
 
 # Store markets in a dictionary
@@ -48,7 +50,5 @@ if __name__ == "__main__":
     print(NSE_AngelOne)
     print(BSE_AngelOne)
     print(f"Instruments traded on NSE via Angel One: {NSE_AngelOne.instruments}")
-
-
 
     print(f"Available Markets: {available_markets.keys()}")
