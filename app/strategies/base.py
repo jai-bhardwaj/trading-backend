@@ -1,12 +1,16 @@
 # strategies.py
-from typing import List, Dict
+from typing import Dict, List
+
 import pandas as pd
+
 # from angel_api import AngelOne  #  Placeholder:  Create a wrapper for the Angel One API.  You might need to install their SDK.
+
 
 class Strategy:
     """
     Base class for all trading strategies.
     """
+
     def __init__(self, name: str, description: str, parameters: Dict = None):
         self.name = name
         self.description = description

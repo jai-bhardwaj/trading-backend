@@ -1,10 +1,42 @@
 services:
-  test:
-    build: . # Build from the Dockerfile in the current directory
-    # You might need to adjust the volumes, depending on your project structure
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:testpass123@db:5432/trading_db
+    networks:
+      - backend-network
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=testpass123
+      - POSTGRES_DB=trading_db
+      # More permissive authentication during development
+      - POSTGRES_HOST_AUTH_METHOD=trust
     volumes:
-      - .:/app # Mount the project directory into the container.  This is useful for development so that changes to your code are immediately reflected in the container.
-    #  command: pytest /app/tests # No need for this, we have ENTRYPOINT in Dockerfile
-    working_dir: /app
-    environment: #add any environment variable
-      - PYTHONPATH=/app
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  backend-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
