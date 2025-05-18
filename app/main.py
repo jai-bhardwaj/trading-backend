@@ -13,13 +13,10 @@ from typing import Optional, List, Dict
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from app.database import SessionLocal, engine
-from app.models import (
-    Base as AppBase,
-    User as UserModel,
-    Strategy as StrategyModel,
-    Order as OrderModel,
-)
+from app.core.database import SessionLocal, engine, get_db, Base
+from app.models.user import User as UserModel
+from app.models.strategy import Strategy as StrategyModel
+from app.models.order import Order as OrderModel
 from app.schemas import (
     UserCreate,
     UserResponse,
@@ -38,6 +35,7 @@ import os
 from dotenv import load_dotenv
 import uuid
 from sqlalchemy import func
+from app.core.security import verify_password, get_password_hash
 
 # Import API routers
 from app.api.endpoints import orders as orders_router
@@ -52,7 +50,7 @@ load_dotenv()
 
 # Create tables
 try:
-    AppBase.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     logger.info("Database tables created successfully")
 except Exception as e:
     logger.error(f"Error creating database tables: {e}")
@@ -130,10 +128,25 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_credentials=False,  # Don't allow credentials since we're using Authorization header
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000", 
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost",
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000", 
+        "http://127.0.0.1",
+        "http://192.168.1.1:3000",
+        "http://192.168.1.100:3000",
+        "*",  # Allow all origins as a fallback
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 
@@ -176,15 +189,6 @@ class UserCreate(BaseModel):
     password: str
 
 
-class User(BaseModel):
-    id: str
-    email: str
-    is_active: bool
-
-    class Config:
-        from_attributes = True
-
-
 class StrategyBase(BaseModel):
     name: str
     margin: float
@@ -218,12 +222,14 @@ def get_password_hash(password):
 def authenticate_user(db: Session, username_or_email: str, password: str):
     try:
         # Try to find user by username first
-        user = db.query(UserModel).filter(UserModel.id == username_or_email).first()
+        user = db.query(UserModel).filter(UserModel.username == username_or_email).first()
         if not user:
             # Try to find user by email
-            user = (
-                db.query(UserModel).filter(UserModel.email == username_or_email).first()
-            )
+            user = db.query(UserModel).filter(UserModel.email == username_or_email).first()
+        if not user:
+            # Try to find user by id (if username_or_email is an integer string)
+            if username_or_email.isdigit():
+                user = db.query(UserModel).filter(UserModel.id == int(username_or_email)).first()
         if not user:
             logger.warning(f"User not found: {username_or_email}")
             return False
@@ -288,86 +294,91 @@ async def login_for_access_token(
 
 
 def create_default_strategies(db: Session, user_id: str):
-    """Create default strategies for a new user."""
-    default_strategies = [
-        {
-            "name": "Moving Average Crossover",
-            "margin": 100000.0,
-            "marginType": "rupees",
-            "basePrice": 1000.0,
-            "status": "active",
-            "user_id": user_id,
-            "lastUpdated": datetime.utcnow().isoformat(),
-        },
-        {
-            "name": "RSI Strategy",
-            "margin": 5.0,
-            "marginType": "percentage",
-            "basePrice": 1000.0,
-            "status": "inactive",
-            "user_id": user_id,
-            "lastUpdated": datetime.utcnow().isoformat(),
-        },
-        {
-            "name": "MACD Strategy",
-            "margin": 150000.0,
-            "marginType": "rupees",
-            "basePrice": 1000.0,
-            "status": "inactive",
-            "user_id": user_id,
-            "lastUpdated": datetime.utcnow().isoformat(),
-        },
-    ]
-
-    for strategy_data in default_strategies:
-        strategy = StrategyModel(**strategy_data)
-        db.add(strategy)
-
+    """Create default strategies for a new user with proper error handling"""
     try:
+        default_strategies = [
+            {
+                "name": "NIFTY",
+                "symbol": "NIFTY",
+                "margin": 1000.0,
+                "marginType": "rupees",
+                "basePrice": 0.0,
+                "status": StrategyStatus.ACTIVE
+            },
+            {
+                "name": "BANKNIFTY",
+                "symbol": "BANKNIFTY",
+                "margin": 1000.0,
+                "marginType": "rupees",
+                "basePrice": 0.0,
+                "status": StrategyStatus.ACTIVE
+            }
+        ]
+
+        for strategy_data in default_strategies:
+            strategy = StrategyModel(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                **strategy_data
+            )
+            db.add(strategy)
+
         db.commit()
         logger.info(f"Created default strategies for user {user_id}")
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating default strategies: {e}")
-        raise
+        logger.error(f"Error creating default strategies: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating default strategies"
+        )
 
 
 @app.post("/auth/register", response_model=UserResponse)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user with proper error handling and UUID generation"""
     try:
-        # Check if user already exists
-        db_user = (
-            db.query(UserModel).filter(UserModel.username == user.username).first()
-        )
-        if db_user:
-            raise HTTPException(status_code=400, detail="Username already registered")
-
-        db_user = db.query(UserModel).filter(UserModel.email == user.email).first()
-        if db_user:
-            raise HTTPException(status_code=400, detail="Email already registered")
-
-        # Create new user
-        hashed_password = get_password_hash(user.password)
+        # Check if username or email already exists
+        existing_user = db.query(UserModel).filter(
+            (UserModel.username == user.username) | (UserModel.email == user.email)
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username or email already registered"
+            )
+        # Generate UUID for user
+        user_id = str(uuid.uuid4())
+        # Create new user with hashed password
         db_user = UserModel(
+            id=user_id,
             username=user.username,
             email=user.email,
-            hashed_password=hashed_password,
+            hashed_password=get_password_hash(user.password),
+            is_active=True
         )
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-
-        # Create default strategies for the new user
-        create_default_strategies(db, db_user.username)
-
-        return db_user
-    except HTTPException as he:
-        logger.error(f"HTTP Exception in user registration: {str(he)}")
-        raise he
+        
+        # Return all required fields
+        return UserResponse(
+            id=db_user.id,
+            username=db_user.username,
+            email=db_user.email,
+            is_active=db_user.is_active,
+            created_at=getattr(db_user, "created_at", None),
+            updated_at=getattr(db_user, "updated_at", None)
+        )
     except Exception as e:
-        logger.error(f"Error in user registration: {str(e)}")
-        logger.exception("Full traceback:")
-        raise HTTPException(status_code=500, detail=f"Error registering user: {str(e)}")
+        db.rollback()
+        logger.error(f"Error registering user: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error registering user"
+        )
 
 
 @app.get("/users/me", response_model=UserResponse)
@@ -540,7 +551,35 @@ async def initialize_strategies(
                 detail="User already has strategies. Cannot initialize again.",
             )
 
-        create_default_strategies(db, current_user.id)
+        # Create default strategies
+        default_strategies = [
+            {
+                "name": "NIFTY",
+                "symbol": "NIFTY",
+                "margin": 1000.0,
+                "marginType": "rupees",
+                "basePrice": 0.0,
+                "status": "active"  # String value instead of enum
+            },
+            {
+                "name": "BANKNIFTY",
+                "symbol": "BANKNIFTY",
+                "margin": 1000.0,
+                "marginType": "rupees",
+                "basePrice": 0.0,
+                "status": "active"  # String value instead of enum
+            }
+        ]
+
+        for strategy_data in default_strategies:
+            strategy = StrategyModel(
+                id=str(uuid.uuid4()),
+                user_id=current_user.id,
+                **strategy_data
+            )
+            db.add(strategy)
+
+        db.commit()
 
         # Return the newly created strategies
         strategies = (

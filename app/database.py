@@ -3,6 +3,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from app.core.config import settings
 import logging
+# from app.models.user import User  # Removed to fix circular import
+# import Strategy, Order from their correct modules if needed
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,10 @@ def get_db() -> Session:
 def init_db():
     """Initialize database by creating all tables"""
     try:
-        # Import all models here
-        from app.models import User, Strategy, Order
-
+        # Import all models here so they are registered with Base
+        from app.models.user import User
+        from app.models.strategy import Strategy
+        from app.models.order import Order
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
     except Exception as e:
