@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 from fastapi import Depends, HTTPException, status
 from app.api.dependencies.auth import get_current_user
-from app.models import User as UserModel
+from app.models.user import User as UserModel
 import os
 import logging
 

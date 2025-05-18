@@ -3,7 +3,7 @@ import logging
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
-from app.models import User as UserModel
+from app.models.user import User as UserModel
 from app.api.dependencies.auth import get_current_user
 
 from app.api.dependencies import (  # Import dependencies

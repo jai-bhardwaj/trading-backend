@@ -39,20 +39,11 @@ def login_user(username: str, password: str):
 
 
 if __name__ == "__main__":
-    # Test registration
-    print("Testing registration...")
-    username = "testuser2"
-    email = "test2@example.com"
-    password = "12345678"
+    # Test login with new test user
+    print("Testing login with test user...")
+    username = "testuser4"
+    password = "testpassword123"
 
-    reg_result = register_user(username, email, password)
-    if reg_result:
-        print("Registration successful!")
-        print("Access token:", reg_result.get("access_token"))
-    else:
-        print("Registration failed!")
-
-    print("\nTesting login...")
     login_result = login_user(username, password)
     if login_result:
         print("Login successful!")

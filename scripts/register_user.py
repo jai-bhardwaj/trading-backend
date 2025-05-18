@@ -7,7 +7,7 @@ def register_user(username: str, email: str, password: str):
     Register a new user with the trading application.
 
     Args:
-        username (str): The username for the new user (will be used as id)
+        username (str): The username for the new user
         email (str): The email address for the new user
         password (str): The password for the new user
 
@@ -18,7 +18,7 @@ def register_user(username: str, email: str, password: str):
     url = "http://localhost:8000/auth/register"
 
     # Request payload
-    payload = {"id": username, "email": email, "password": password}
+    payload = {"username": username, "email": email, "password": password}
 
     # Headers
     headers = {"Content-Type": "application/json"}
@@ -41,15 +41,14 @@ def register_user(username: str, email: str, password: str):
 
 
 if __name__ == "__main__":
-    # Example usage
-    username = input("Enter username: ")
-    email = input("Enter email: ")
-    password = input("Enter password: ")
-
+    # Automated test user registration
+    username = input("username : ")
+    email = input("email : ")
+    password = input("password : ")
+    print(f"Registering user: {username}")
     result = register_user(username, email, password)
-
     if result:
-        print("\nRegistration successful!")
-        print("Access token:", result.get("access_token"))
+        print("Registration successful!")
+        print("Response:", result)
     else:
-        print("\nRegistration failed. Please check the error message above.")
+        print("Registration failed!")
