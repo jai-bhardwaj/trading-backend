@@ -1,5 +1,11 @@
 version: 0.2
 
+env:
+  variables:
+    AWS_DEFAULT_REGION: ap-south-1
+    ECR_REPOSITORY: trading-backend
+    IMAGE_TAG: latest
+
 phases:
   install:
     runtime-versions:
