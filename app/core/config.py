@@ -6,11 +6,18 @@ Centralized settings with validation and environment variable support
 import os
 from typing import Optional, List
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
+from pydantic import Field, field_validator, ConfigDict
 from functools import lru_cache
 
 class Settings(BaseSettings):
     """Application settings with validation"""
+    
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"  # Ignore extra fields to prevent validation errors
+    )
     
     # Application
     project_name: str = Field(default="Trading Engine", alias="PROJECT_NAME")
@@ -56,41 +63,41 @@ class Settings(BaseSettings):
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
     health_check_interval: int = Field(default=60, alias="HEALTH_CHECK_INTERVAL")
     
-    @validator("database_url")
+    @field_validator("database_url")
+    @classmethod
     def validate_database_url(cls, v):
         if not v or not v.startswith("postgresql"):
             raise ValueError("DATABASE_URL must be a valid PostgreSQL connection string")
         return v
     
-    @validator("secret_key")
+    @field_validator("secret_key")
+    @classmethod
     def validate_secret_key(cls, v):
         if not v or len(v) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters long")
         return v
     
-    @validator("log_level")
+    @field_validator("log_level")
+    @classmethod
     def validate_log_level(cls, v):
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
         return v.upper()
     
-    @validator("worker_count")
+    @field_validator("worker_count")
+    @classmethod
     def validate_worker_count(cls, v):
         if v < 1 or v > 20:
             raise ValueError("WORKER_COUNT must be between 1 and 20")
         return v
     
-    @validator("max_daily_loss_pct")
+    @field_validator("max_daily_loss_pct")
+    @classmethod
     def validate_max_daily_loss_pct(cls, v):
         if v < 0 or v > 50:
             raise ValueError("MAX_DAILY_LOSS_PCT must be between 0 and 50")
         return v
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
 @lru_cache()
 def get_settings() -> Settings:

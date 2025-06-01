@@ -96,6 +96,7 @@ class ProductType(enum.Enum):
 
 class OrderStatus(enum.Enum):
     PENDING = "PENDING"
+    QUEUED = "QUEUED"
     PLACED = "PLACED"
     OPEN = "OPEN"
     COMPLETE = "COMPLETE"
@@ -281,6 +282,11 @@ class Strategy(Base):
     parameters = Column(JSON)
     risk_parameters = Column("riskParameters", JSON)
     
+    # Margin and Trading Configuration
+    margin = Column(Float, default=5.0)  # Margin amount (percentage or rupees)
+    margin_type = Column("marginType", String, default="percentage")  # "percentage" or "rupees"
+    base_price = Column("basePrice", Float, default=50000.0)  # Base price for percentage calculations
+    
     # Performance Metrics
     total_pnl = Column("totalPnl", Float, default=0)
     total_trades = Column("totalTrades", Integer, default=0)
@@ -369,7 +375,7 @@ class Order(Base):
     order_type = Column("orderType", Enum(OrderType, name="OrderType"), nullable=False)
     product_type = Column("productType", Enum(ProductType, name="ProductType"), nullable=False)
     quantity = Column(Integer, nullable=False)
-    price = Column(Float, nullable=False)
+    price = Column(Float)  # Made nullable to match Prisma schema
     trigger_price = Column("triggerPrice", Float)
     variety = Column(String, default="NORMAL")
     
@@ -397,8 +403,8 @@ class Order(Base):
     user = relationship("User", back_populates="orders")
     strategy = relationship("Strategy", back_populates="orders")
     trades = relationship("Trade", back_populates="order", cascade="all, delete-orphan")
-    parent_order = relationship("Order", remote_side=[id])
-    child_orders = relationship("Order", overlaps="parent_order")
+    parent_order = relationship("Order", remote_side=[id], foreign_keys=[parent_order_id])
+    child_orders = relationship("Order", foreign_keys=[parent_order_id], overlaps="parent_order")
 
 class Trade(Base):
     __tablename__ = "trades"

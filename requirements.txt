@@ -1,42 +1,40 @@
-# Core Framework
-asyncio-mqtt==0.16.2
-asyncpg==0.29.0
+# Core dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+pydantic==2.5.2
+pydantic-settings==2.1.0
 
 # Database
-SQLAlchemy==2.0.23
+asyncpg==0.29.0
+SQLAlchemy[asyncio]==2.0.23
 alembic==1.13.1
-psycopg2-binary==2.9.9
 
-# Redis & Queue
+# Redis and Queue
 redis==5.0.1
-celery==5.3.4
+aioredis==2.0.1
 
-# Configuration & Validation
-pydantic==2.5.0
-pydantic-settings==2.1.0
-python-dotenv==1.0.0
-
-# Security
-cryptography==41.0.8
-PyJWT==2.8.0
-
-# HTTP & API
-httpx==0.25.2
+# HTTP and API
 aiohttp==3.9.1
+httpx==0.25.2
+requests==2.31.0
+
+# Authentication and Security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+cryptography==41.0.8
+python-multipart==0.0.6
+pyotp==2.9.0
+
+# Environment and Configuration
+python-dotenv==1.0.0
 
 # Data Processing
 pandas==2.1.4
-numpy==1.25.2
+numpy==1.26.2
 
-# Broker Integration
-requests==2.31.0
-websockets==12.0
-
-# Logging & Monitoring
-structlog==23.2.0
-
-# Development (optional)
-pytest==7.4.3
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+pytest==7.4.0
 pytest-asyncio==0.21.1
+pytest-cov==4.1.0

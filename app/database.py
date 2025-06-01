@@ -7,7 +7,8 @@ import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from app.config.settings import get_settings
+from sqlalchemy import text
+from app.core.config import get_settings
 from contextlib import asynccontextmanager
 import ssl
 import os
@@ -90,8 +91,14 @@ class DatabaseManager:
         """Check database health"""
         try:
             async with self.get_session() as session:
-                await session.execute("SELECT 1")
+                await session.execute(text("SELECT 1"))
                 return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False
+
+async def init_database():
+    """Initialize database for compatibility"""
+    db_manager = DatabaseManager()
+    await db_manager.initialize()
+    return db_manager
