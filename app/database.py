@@ -1,63 +1,97 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
-from app.core.config import settings
+"""
+Database Manager for Trading Engine
+"""
+
+import asyncio
 import logging
-# from app.models.user import User  # Removed to fix circular import
-# import Strategy, Order from their correct modules if needed
+from typing import Optional
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
+from app.config.settings import get_settings
+from contextlib import asynccontextmanager
+import ssl
+import os
 
 logger = logging.getLogger(__name__)
 
-# Use DATABASE_URL from settings
-SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
-
-# Create engine with connection pooling and timeout settings
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    pool_size=5,
-    max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=1800,  # Recycle connections after 30 minutes
-)
-
-# Create session factory with proper settings
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-    expire_on_commit=False,  # Prevent expired object issues
-)
-
-# Create declarative base
 Base = declarative_base()
 
+class DatabaseManager:
+    """Database connection and session manager"""
+    
+    def __init__(self):
+        self.settings = get_settings()
+        self.engine: Optional[object] = None
+        self.session_factory: Optional[async_sessionmaker] = None
+        
+    async def initialize(self):
+        """Initialize database connection"""
+        try:
+            logger.info(f"Initializing database connection...")
+            # Convert PostgreSQL URL to async format
+            database_url = self.settings.database_url
 
-def get_db() -> Session:
-    """Get database session with proper error handling"""
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        logger.error(f"Database session error: {str(e)}")
-        db.rollback()
-        raise
-    finally:
-        db.close()
+            # Replace the database_url with the new one
+            if (self.settings.database_url.startswith("postgresql://")):
+                database_url = self.settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+            
+            # Create connect args for asyncpg
+            connect_args = {}
+            
+            # Handle SSL for DigitalOcean or other cloud providers
+            if "sslmode=require" in database_url:
+                # Remove sslmode from URL as asyncpg handles it differently
+                database_url = database_url.replace("?sslmode=require", "").replace("&sslmode=require", "")
+                
+                # Check if SSL certificate exists
+                ssl_cert_path = "/root/ca-certificate.crt"
+                if os.path.exists(ssl_cert_path):
+                    ssl_context = ssl.create_default_context(cafile=ssl_cert_path)
+                    connect_args["ssl"] = ssl_context
+                else:
+                    # Use default SSL context for cloud databases
+                    connect_args["ssl"] = "require"
 
-
-def init_db():
-    """Initialize database by creating all tables"""
-    try:
-        # Import all models here so they are registered with Base
-        from app.models.user import User
-        from app.models.strategy import Strategy
-        from app.models.order import Order
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created successfully")
-    except Exception as e:
-        logger.error(f"Error creating database tables: {str(e)}")
-        raise
-
-
-# Initialize database on module import
-init_db()
+            self.engine = create_async_engine(
+                database_url,
+                echo=self.settings.debug,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                connect_args=connect_args
+            )
+            
+            self.session_factory = async_sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False
+            )
+            
+            logger.info("Database connection initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+            raise
+    
+    @asynccontextmanager
+    async def get_session(self):
+        """Get database session as async context manager"""
+        if not self.session_factory:
+            raise RuntimeError("Database not initialized")
+        async with self.session_factory() as session:
+            yield session
+    
+    async def close(self):
+        """Close database connections"""
+        if self.engine:
+            await self.engine.dispose()
+            logger.info("Database connections closed")
+    
+    async def health_check(self) -> bool:
+        """Check database health"""
+        try:
+            async with self.get_session() as session:
+                await session.execute("SELECT 1")
+                return True
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return False

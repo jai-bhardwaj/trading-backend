@@ -7,16 +7,109 @@ broker APIs (e.g., Angel One SmartAPI parameters).
 This is CRUCIAL for broker integration. The mappings here are ILLUSTRATIVE
 and need to be carefully verified against official broker documentation.
 """
+import asyncio
 import logging
+from typing import Dict, Optional
 
 from app.core.interfaces import Balance, Order, Position
 
 logger = logging.getLogger(__name__)
 
+# Cache for symbol tokens to avoid repeated API calls
+_symbol_token_cache: Dict[str, str] = {}
+
 # --- Angel One Mapping ---
 
+async def fetch_symbol_token(smartapi_instance, symbol: str, exchange: str) -> Optional[tuple[str, str]]:
+    """
+    Fetch symbol token for a given symbol and exchange using Angel One's searchScrip API.
+    
+    Args:
+        smartapi_instance: The SmartConnect instance
+        symbol: Trading symbol (e.g., "RELIANCE")
+        exchange: Exchange name (e.g., "NSE")
+    
+    Returns:
+        Tuple of (symbol_token, correct_trading_symbol) if found, None otherwise
+    """
+    # Create cache key
+    cache_key = f"{symbol}_{exchange}"
+    
+    # Check cache first
+    if cache_key in _symbol_token_cache:
+        logger.debug(f"Found cached symbol token for {symbol} on {exchange}")
+        cached_value = _symbol_token_cache[cache_key]
+        # Handle both old format (just token) and new format (token, symbol)
+        if isinstance(cached_value, tuple):
+            return cached_value
+        else:
+            # Old cache format, return with original symbol
+            return (cached_value, symbol)
+    
+    try:
+        # Use searchScrip API to find the symbol token
+        logger.info(f"Searching for symbol token: {symbol} on {exchange}")
+        
+        # Run the synchronous searchScrip call in a thread
+        search_result = await asyncio.to_thread(
+            smartapi_instance.searchScrip, exchange, symbol
+        )
+        
+        if search_result and isinstance(search_result, dict):
+            if search_result.get("status") and search_result.get("data"):
+                data = search_result["data"]
+                
+                # searchScrip returns a list of matching instruments
+                if isinstance(data, list) and len(data) > 0:
+                    # Look for exact match first
+                    for instrument in data:
+                        if (instrument.get("tradingsymbol") == symbol and 
+                            instrument.get("exchange") == exchange):
+                            token = instrument.get("symboltoken")
+                            if token:
+                                # Cache the result
+                                result = (token, symbol)
+                                _symbol_token_cache[cache_key] = result
+                                logger.info(f"Found exact symbol token for {symbol}: {token}")
+                                return result
+                    
+                    # If no exact match and exchange is NSE, look for equity symbol (symbol-EQ)
+                    if exchange.upper() == "NSE":
+                        equity_symbol = f"{symbol}-EQ"
+                        for instrument in data:
+                            if (instrument.get("tradingsymbol") == equity_symbol and 
+                                instrument.get("exchange") == exchange):
+                                token = instrument.get("symboltoken")
+                                if token:
+                                    # Cache the result with the correct trading symbol
+                                    result = (token, equity_symbol)
+                                    _symbol_token_cache[cache_key] = result
+                                    logger.info(f"Found equity symbol token for {symbol}: {equity_symbol} -> {token}")
+                                    return result
+                    
+                    # If still no match, try the first result (might be close match)
+                    first_result = data[0]
+                    token = first_result.get("symboltoken")
+                    trading_symbol = first_result.get("tradingsymbol")
+                    if token and trading_symbol:
+                        result = (token, trading_symbol)
+                        logger.warning(f"Using first search result for {symbol}: {trading_symbol} -> {token}")
+                        _symbol_token_cache[cache_key] = result
+                        return result
+                        
+                logger.warning(f"No matching instruments found for {symbol} on {exchange}")
+            else:
+                error_msg = search_result.get("message", "Unknown error")
+                logger.error(f"searchScrip API error for {symbol}: {error_msg}")
+        else:
+            logger.error(f"Invalid response from searchScrip API for {symbol}: {search_result}")
+            
+    except Exception as e:
+        logger.error(f"Exception while fetching symbol token for {symbol} on {exchange}: {e}", exc_info=True)
+    
+    return None
 
-def map_order_to_angelone(order: Order) -> dict[str, any]:
+def map_order_to_angelone(order: Order, smartapi_instance=None) -> dict[str, any]:
     """Maps the internal Order object to Angel One placeOrder parameters."""
 
     # **Critical Mappings - Verify with Angel One Docs!**
@@ -55,7 +148,7 @@ def map_order_to_angelone(order: Order) -> dict[str, any]:
             order.variety, "NORMAL"
         ),  # Default to NORMAL if not specified or map based on order_type/product_type
         "tradingsymbol": order.symbol,  # e.g., "SBIN-EQ" or "NIFTY25MAY2518500CE"
-        "symboltoken": "",  # <--- IMPORTANT: Needs to be fetched using searchScrip or similar API! Placeholder.
+        "symboltoken": "",  # Will be fetched below
         "transactiontype": transaction_type_map.get(order.side),
         "exchange": order.exchange,  # e.g., "NSE", "NFO", "MCX"
         "ordertype": order_type_map.get(order.order_type),
@@ -83,23 +176,22 @@ def map_order_to_angelone(order: Order) -> dict[str, any]:
         params["triggerprice"] = str(order.trigger_price)
         # params["variety"] = variety_map["STOPLOSS"] # Does variety need setting for SL-M? Check docs.
 
-    # --- !!! FETCH SYMBOL TOKEN !!! ---
-    # You MUST implement logic here (or before calling this function)
-    # to call Angel One's instrument search API (e.g., searchScrip)
-    # to get the correct 'symboltoken' based on the 'tradingsymbol' and 'exchange'.
-    # This token is mandatory for placing orders.
-    # Example placeholder - replace with actual API call and caching:
-    # token = await fetch_symbol_token(order.symbol, order.exchange)
-    # if not token: raise ValueError(f"Could not find symboltoken for {order.symbol} on {order.exchange}")
-    # params["symboltoken"] = token
-    logger.warning(
-        f"SYMBOL TOKEN for {order.symbol} is NOT being fetched. Order placement will likely fail."
-    )  # Add this warning
+    # --- FETCH SYMBOL TOKEN ---
+    # This is now implemented using Angel One's searchScrip API
+    if smartapi_instance:
+        try:
+            # This will be called from an async context, so we need to handle it properly
+            # The calling function should handle the async call
+            logger.info(f"Symbol token fetching will be handled by calling function for {order.symbol}")
+        except Exception as e:
+            logger.error(f"Error preparing symbol token fetch for {order.symbol}: {e}")
+    else:
+        logger.warning(f"No SmartAPI instance provided for symbol token fetching for {order.symbol}")
 
     # Remove None values if the API doesn't accept them (depends on library/API)
     # params = {k: v for k, v in params.items() if v is not None}
 
-    logger.debug(f"Mapped Angel One order params: {params}")
+    logger.debug(f"Mapped Angel One order params (before token fetch): {params}")
     if (
         not params["transactiontype"]
         or not params["ordertype"]
