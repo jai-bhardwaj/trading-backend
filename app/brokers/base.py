@@ -102,23 +102,48 @@ class BrokerTrade:
 
 @dataclass
 class MarketData:
-    """Real-time market data structure"""
+    """Market data structure"""
     symbol: str
-    exchange: str
-    ltp: float  # Last Traded Price
+    timestamp: datetime
     open: float
     high: float
     low: float
     close: float
     volume: int
-    change: float
-    change_pct: float
-    timestamp: datetime
+    previous_close: Optional[float] = None
+    change: Optional[float] = None
+    change_pct: Optional[float] = None
     
     def to_dict(self) -> Dict[str, Any]:
-        result = asdict(self)
-        result['timestamp'] = self.timestamp.isoformat()
-        return result
+        """Convert to dictionary"""
+        return {
+            'symbol': self.symbol,
+            'timestamp': self.timestamp.isoformat(),
+            'open': self.open,
+            'high': self.high,
+            'low': self.low,
+            'close': self.close,
+            'volume': self.volume,
+            'previous_close': self.previous_close,
+            'change': self.change,
+            'change_pct': self.change_pct
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MarketData':
+        """Create from dictionary"""
+        return cls(
+            symbol=data['symbol'],
+            timestamp=datetime.fromisoformat(data['timestamp']),
+            open=data['open'],
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            volume=data['volume'],
+            previous_close=data.get('previous_close'),
+            change=data.get('change'),
+            change_pct=data.get('change_pct')
+        )
 
 # Broker-specific exceptions
 class BrokerError(Exception):
