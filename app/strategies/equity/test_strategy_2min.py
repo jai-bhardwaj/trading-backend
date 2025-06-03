@@ -1,50 +1,42 @@
 """
 Test Strategy 2 Min - Places orders every 2 minutes for testing
-
-This is a test strategy designed to place orders every 2 minutes to test
-the trading system's order execution, monitoring, and database operations.
+Updated for the new cleaned schema and enhanced strategy execution system.
 """
 
-import numpy as np
-import pandas as pd
-from typing import Optional, Dict, Any
+import asyncio
+import logging
+from typing import Optional, Dict, Any, List
 from datetime import datetime, time, timedelta
-from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, SignalType, AssetClass
-from ..registry import StrategyRegistry
+from app.strategies.base_strategy import BaseStrategy
 
-@StrategyRegistry.register("test_strategy_2min", AssetClass.EQUITY)
+logger = logging.getLogger(__name__)
+
 class TestStrategy2Min(BaseStrategy):
     """
-    Test Strategy - Places orders every 2 minutes
+    Test Strategy - Places orders every 2 minutes for the new system
     
     This strategy is designed for testing purposes only. It will:
     - Place a BUY order every 2 minutes
     - Alternate between different test symbols
     - Use small position sizes for safety
     - Close positions after 4 minutes (2 cycles)
-    
-    Parameters:
-    - order_interval_minutes: Minutes between orders (default: 2)
-    - test_symbols: List of symbols to cycle through
-    - max_position_size: Maximum position size as % of balance (default: 0.01)
-    - auto_close_minutes: Minutes after which to close positions (default: 4)
     """
     
-    def initialize(self) -> None:
+    async def on_initialize(self):
         """Initialize test strategy parameters"""
         # Strategy parameters
-        self.order_interval_minutes = self.parameters.get('order_interval_minutes', 2)
-        self.max_position_size = self.parameters.get('max_position_size', 0.01)  # Very small for testing
-        self.auto_close_minutes = self.parameters.get('auto_close_minutes', 4)
+        self.order_interval_minutes = self.config.get('order_interval_minutes', 2)
+        self.max_position_size = self.config.get('max_position_size', 0.01)  # Very small for testing
+        self.auto_close_minutes = self.config.get('auto_close_minutes', 4)
         
         # Test symbols to cycle through
-        self.test_symbols = self.parameters.get('test_symbols', ['RELIANCE', 'TCS', 'INFY', 'HDFC', 'ICICIBANK'])
+        self.test_symbols = self.config.get('test_symbols', ['RELIANCE', 'TCS', 'INFY', 'HDFC', 'ICICIBANK'])
         self.current_symbol_index = 0
         
         # Risk management parameters (conservative for testing)
-        self.max_drawdown = self.risk_parameters.get('max_drawdown', 0.02)
-        self.stop_loss_pct = self.risk_parameters.get('stop_loss_pct', 0.01)
-        self.take_profit_pct = self.risk_parameters.get('take_profit_pct', 0.02)
+        self.max_drawdown = self.config.get('max_drawdown', 0.02)
+        self.stop_loss_pct = self.config.get('stop_loss_pct', 0.01)
+        self.take_profit_pct = self.config.get('take_profit_pct', 0.02)
         
         # Strategy state
         self.last_order_time: Optional[datetime] = None
@@ -55,36 +47,83 @@ class TestStrategy2Min(BaseStrategy):
         self.market_start = time(9, 15)
         self.market_end = time(15, 30)
         
-        # Test mode flag
-        self.is_test_mode = True
+        # Subscribe to test symbols
+        await self.subscribe_to_instruments(self.test_symbols)
+        
+        logger.info(f"Test Strategy 2Min initialized with {len(self.test_symbols)} symbols")
     
-    def process_market_data(self, market_data: MarketData) -> Optional[StrategySignal]:
-        """Process market data and generate test signals every 2 minutes"""
-        
-        # Add to historical data
-        self.add_historical_data(market_data)
-        
-        current_time = market_data.timestamp
+    async def on_market_data(self, symbol: str, data: Dict[str, Any]):
+        """Process market data updates for test strategy"""
+        try:
+            current_price = data.get('ltp', data.get('close', 100.0))
+            current_time = datetime.now()
+            
+            # Check trading hours
+            if not (self.market_start <= current_time.time() <= self.market_end):
+                return
+            
+            # Check for auto-close signals first
+            if await self._should_auto_close(symbol, current_time):
+                await self.exit_position(symbol, "NSE")
+                return
+            
+            # Check if it's time to place a new order
+            if self._should_place_order(current_time):
+                # Get the next test symbol
+                test_symbol = self._get_next_test_symbol()
+                
+                # Only place order if this is the current test symbol
+                if symbol == test_symbol:
+                    await self._place_test_order(symbol, current_price)
+                    
+        except Exception as e:
+            logger.error(f"Error processing market data for {symbol}: {e}")
+    
+    async def generate_signals(self) -> List[Dict[str, Any]]:
+        """Generate trading signals every 2 minutes"""
+        signals = []
+        current_time = datetime.now()
         
         # Check trading hours
         if not (self.market_start <= current_time.time() <= self.market_end):
-            return None
+            return signals
         
-        # Check for auto-close signals first
-        auto_close_signal = self._check_auto_close(market_data.symbol, market_data.close, current_time)
-        if auto_close_signal:
-            return auto_close_signal
+        # Check for auto-close signals
+        for position_key, position in self.positions.items():
+            if position.quantity > 0:
+                symbol = position.symbol
+                if await self._should_auto_close(symbol, current_time):
+                    signals.append({
+                        'type': 'SELL',
+                        'symbol': symbol,
+                        'exchange': position.exchange,
+                        'quantity': position.quantity,
+                        'order_type': 'MARKET',
+                        'product_type': position.product_type.value,
+                        'reason': f'Auto-close after {self.auto_close_minutes} minutes'
+                    })
         
         # Check if it's time to place a new order
         if self._should_place_order(current_time):
-            # Get the next test symbol
             test_symbol = self._get_next_test_symbol()
             
-            # Only place order if this is the current test symbol
-            if market_data.symbol == test_symbol:
-                return self._create_test_buy_signal(market_data, current_time)
+            # Only create signal if we don't have a position in this symbol
+            position_key = f"{test_symbol}_NSE_INTRADAY"
+            if position_key not in self.positions or self.positions[position_key].quantity == 0:
+                signals.append({
+                    'type': 'BUY',
+                    'symbol': test_symbol,
+                    'exchange': 'NSE',
+                    'quantity': 1,  # Small test quantity
+                    'order_type': 'MARKET',
+                    'product_type': 'INTRADAY',
+                    'reason': f'Test order #{self.order_counter + 1} - 2min interval'
+                })
+                
+                self.order_counter += 1
+                self.last_order_time = current_time
         
-        return None
+        return signals
     
     def _should_place_order(self, current_time: datetime) -> bool:
         """Check if it's time to place a new order based on interval"""
@@ -100,149 +139,55 @@ class TestStrategy2Min(BaseStrategy):
         self.current_symbol_index = (self.current_symbol_index + 1) % len(self.test_symbols)
         return symbol
     
-    def _create_test_buy_signal(self, market_data: MarketData, current_time: datetime) -> StrategySignal:
-        """Create a test BUY signal"""
-        current_price = market_data.close
-        
-        # Calculate stop loss and take profit
-        stop_loss = current_price * (1 - self.stop_loss_pct)
-        take_profit = current_price * (1 + self.take_profit_pct)
-        
-        # Update last order time and counter
-        self.last_order_time = current_time
-        self.order_counter += 1
-        
-        return StrategySignal(
-            signal_type=SignalType.BUY,
-            symbol=market_data.symbol,
-            confidence=0.5,  # Medium confidence for test
-            price=current_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            metadata={
-                'test_order': True,
-                'order_number': self.order_counter,
-                'test_symbol': market_data.symbol,
-                'order_time': current_time.isoformat(),
-                'strategy_type': 'TEST_2MIN',
-                'entry_reason': f'Test order #{self.order_counter} - 2min interval'
-            }
-        )
-    
-    def _check_auto_close(self, symbol: str, current_price: float, current_time: datetime) -> Optional[StrategySignal]:
+    async def _should_auto_close(self, symbol: str, current_time: datetime) -> bool:
         """Check if position should be auto-closed after specified time"""
-        if symbol not in self.positions or self.positions[symbol]['quantity'] == 0:
-            return None
-        
         if symbol not in self.entry_times:
-            return None
+            return False
         
         entry_time = self.entry_times[symbol]
         time_held = current_time - entry_time
         
-        if time_held >= timedelta(minutes=self.auto_close_minutes):
-            return StrategySignal(
-                signal_type=SignalType.CLOSE_LONG,
+        return time_held >= timedelta(minutes=self.auto_close_minutes)
+    
+    async def _place_test_order(self, symbol: str, current_price: float):
+        """Place a test buy order"""
+        try:
+            await self.place_buy_order(
                 symbol=symbol,
-                confidence=1.0,
-                price=current_price,
-                metadata={
-                    'exit_reason': f'Auto-close after {self.auto_close_minutes} minutes',
-                    'time_held_minutes': time_held.total_seconds() / 60,
-                    'entry_time': entry_time.isoformat(),
-                    'strategy_type': 'TEST_2MIN',
-                    'test_order': True
-                }
+                exchange="NSE",
+                quantity=1,  # Small test quantity
+                order_type='MARKET',
+                product_type='INTRADAY'
             )
-        
-        return None
-    
-    def calculate_position_size(self, signal: StrategySignal, current_balance: float) -> int:
-        """Calculate small position size for testing"""
-        
-        # Very small position value for testing
-        max_position_value = current_balance * self.max_position_size
-        
-        # Calculate base position size
-        if signal.price and signal.price > 0:
-            base_quantity = int(max_position_value / signal.price)
-        else:
-            return 0
-        
-        # Ensure minimum quantity of 1 for testing
-        test_quantity = max(1, base_quantity)
-        
-        # Cap at reasonable test size (max 10 shares)
-        test_quantity = min(test_quantity, 10)
-        
-        return test_quantity
-    
-    def _validate_asset_class_specific(self, signal: StrategySignal) -> bool:
-        """Test-specific validation"""
-        
-        # Check if it's market hours
-        current_time = datetime.now().time()
-        if not (self.market_start <= current_time <= self.market_end):
-            return False
-        
-        # Ensure reasonable price
-        if signal.price and (signal.price <= 0 or signal.price > 100000):
-            return False
-        
-        # For test strategy, allow multiple positions for testing
-        return True
-    
-    def update_position(self, symbol: str, quantity: int, price: float, side: str) -> None:
-        """Update position and track entry times"""
-        super().update_position(symbol, quantity, price, side)
-        
-        # Track entry time for auto-close logic
-        if side in ['BUY'] and symbol not in self.entry_times:
+            
+            # Track entry time for auto-close
             self.entry_times[symbol] = datetime.now()
-        
-        # Clear entry data if position is closed
-        if symbol in self.positions and self.positions[symbol]['quantity'] == 0:
-            self.entry_times.pop(symbol, None)
+            self.order_counter += 1
+            self.last_order_time = datetime.now()
+            
+            logger.info(f"Placed test order #{self.order_counter} for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Failed to place test order for {symbol}: {e}")
     
-    def check_stop_loss(self, symbol: str, current_price: float) -> Optional[StrategySignal]:
-        """Check stop loss conditions for test positions"""
-        if symbol not in self.positions or self.positions[symbol]['quantity'] == 0:
-            return None
-        
-        position = self.positions[symbol]
-        entry_price = position['average_price']
-        
-        if position['quantity'] > 0:  # Long position
-            stop_loss_price = entry_price * (1 - self.stop_loss_pct)
-            if current_price <= stop_loss_price:
-                return StrategySignal(
-                    signal_type=SignalType.CLOSE_LONG,
-                    symbol=symbol,
-                    confidence=1.0,
-                    price=current_price,
-                    metadata={
-                        'exit_reason': 'Stop Loss Triggered (TEST)',
-                        'entry_price': entry_price,
-                        'stop_loss_price': stop_loss_price,
-                        'strategy_type': 'TEST_2MIN',
-                        'test_order': True
-                    }
-                )
-        
-        return None
-    
-    def get_strategy_status(self) -> Dict[str, Any]:
-        """Get current test strategy status"""
-        status = super().get_strategy_status()
-        status.update({
-            'strategy_type': 'TEST_2MIN',
-            'is_test_mode': self.is_test_mode,
-            'order_interval_minutes': self.order_interval_minutes,
-            'auto_close_minutes': self.auto_close_minutes,
+    async def on_strategy_iteration(self):
+        """Called after each strategy iteration"""
+        # Update custom metrics
+        self.metrics['custom_metrics'].update({
             'order_counter': self.order_counter,
-            'last_order_time': self.last_order_time.isoformat() if self.last_order_time else None,
             'current_test_symbol': self.test_symbols[self.current_symbol_index],
-            'test_symbols': self.test_symbols,
-            'active_test_positions': len([p for p in self.positions.values() if p['quantity'] != 0])
+            'active_test_positions': len([p for p in self.positions.values() if p.quantity > 0]),
+            'last_order_time': self.last_order_time.isoformat() if self.last_order_time else None
         })
-        return status 
+    
+    async def on_order_filled(self, order):
+        """Called when an order is filled"""
+        logger.info(f"Test order filled: {order.symbol} {order.side.value} {order.quantity} @ {order.average_price}")
+    
+    async def on_position_opened(self, position):
+        """Called when a new position is opened"""
+        logger.info(f"Test position opened: {position.symbol} {position.quantity} shares")
+    
+    async def on_position_closed(self, position, pnl: float):
+        """Called when a position is closed"""
+        logger.info(f"Test position closed: {position.symbol} with P&L: ₹{pnl}") 
