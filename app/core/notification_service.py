@@ -13,7 +13,7 @@ from enum import Enum
 import redis.asyncio as redis
 from sqlalchemy import text
 
-from app.database import db_manager, RedisKeys
+from app.database import get_database_manager, RedisKeys
 from app.models.base import *
 from app.strategies.base import StrategySignal
 
@@ -69,7 +69,7 @@ class NotificationService:
     async def initialize(self):
         """Initialize the notification service."""
         try:
-            self.redis_client = await db_manager.get_redis()
+            self.redis_client = await get_database_manager().get_redis()
             logger.info("Notification service initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize notification service: {e}")
@@ -146,7 +146,7 @@ class NotificationService:
     async def _store_in_database(self, notification: Dict[str, Any]):
         """Store critical notification in database."""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     INSERT INTO notifications 
                     (user_id, type, title, message, data, status, created_at)
@@ -193,7 +193,7 @@ class NotificationService:
     async def _get_user_preferences(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user notification preferences."""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT * FROM notification_settings WHERE user_id = :user_id
                 """), {"user_id": user_id})
@@ -281,7 +281,7 @@ class NotificationService:
     async def get_critical_notifications(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Get critical notifications from database."""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT id, type, title, message, data, status, created_at, read_at
                     FROM notifications 
@@ -313,7 +313,7 @@ class NotificationService:
     async def mark_notification_read(self, user_id: str, notification_id: str):
         """Mark a critical notification as read."""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE notifications 
                     SET status = 'READ', read_at = NOW()
@@ -328,7 +328,7 @@ class NotificationService:
         """Clean up old notifications from Redis and database."""
         try:
             # Clean up database notifications older than specified days
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     DELETE FROM notifications 
                     WHERE created_at < NOW() - INTERVAL :days DAY

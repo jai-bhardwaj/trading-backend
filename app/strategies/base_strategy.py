@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from sqlalchemy import text
 
-from app.database import db_manager, RedisKeys
+from app.database import get_database_manager, RedisKeys
 from app.core.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ class BaseStrategy(ABC):
         """Initialize strategy with new schema components"""
         try:
             # Get Redis client
-            self.redis_client = await db_manager.get_redis()
+            self.redis_client = await get_database_manager().get_redis()
             
             # Initialize notification service
             self.notification_service = NotificationService()
@@ -282,7 +282,7 @@ class BaseStrategy(ABC):
             order_id = f"ord_{int(datetime.now().timestamp() * 1000)}"
             
             # Insert order into database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     INSERT INTO orders 
                     (id, user_id, strategy_id, symbol, exchange, side, order_type, 
@@ -365,7 +365,7 @@ class BaseStrategy(ABC):
             order_id = f"ord_{int(datetime.now().timestamp() * 1000)}"
             
             # Insert order into database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     INSERT INTO orders 
                     (id, user_id, strategy_id, symbol, exchange, side, order_type, 
@@ -456,7 +456,7 @@ class BaseStrategy(ABC):
             order.average_price = current_price
             
             # Update in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE orders 
                     SET status = :status, filled_quantity = :filled_quantity, 
@@ -565,7 +565,7 @@ class BaseStrategy(ABC):
     async def _update_position_in_db(self, position: Position):
         """Update position in database"""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 # Check if position exists
                 result = await session.execute(text("""
                     SELECT id FROM positions 
@@ -650,7 +650,7 @@ class BaseStrategy(ABC):
     async def _load_existing_positions(self):
         """Load existing positions from database"""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT * FROM positions 
                     WHERE user_id = :user_id AND quantity > 0
@@ -682,7 +682,7 @@ class BaseStrategy(ABC):
     async def _load_existing_orders(self):
         """Load existing open orders from database"""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT * FROM orders 
                     WHERE user_id = :user_id AND strategy_id = :strategy_id

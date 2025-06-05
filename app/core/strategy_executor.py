@@ -14,7 +14,7 @@ import importlib
 import redis.asyncio as redis
 from sqlalchemy import text
 
-from app.database import db_manager, RedisKeys
+from app.database import get_database_manager, RedisKeys
 from app.core.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class StrategyExecutor:
         """Pause the strategy execution."""
         try:
             # Send pause command via Redis
-            redis_client = await db_manager.get_redis()
+            redis_client = await get_database_manager().get_redis()
             await redis_client.publish(
                 RedisKeys.STRATEGY_COMMANDS.format(strategy_id=self.config_id),
                 json.dumps({"command": "PAUSE"})
@@ -110,7 +110,7 @@ class StrategyExecutor:
         """Resume the strategy execution."""
         try:
             # Send resume command via Redis
-            redis_client = await db_manager.get_redis()
+            redis_client = await get_database_manager().get_redis()
             await redis_client.publish(
                 RedisKeys.STRATEGY_COMMANDS.format(strategy_id=self.config_id),
                 json.dumps({"command": "RESUME"})
@@ -150,7 +150,7 @@ class StrategyProcessRunner:
             init_database()
             
             # Get Redis client
-            self.redis_client = await db_manager.get_redis()
+            self.redis_client = await get_database_manager().get_redis()
             
             # Initialize notification service
             self.notification_service = NotificationService()
@@ -310,7 +310,7 @@ class StrategyProcessRunner:
                     metrics = await self.strategy_instance.get_metrics()
                     
                     # Save metrics to database
-                    async with db_manager.get_async_session() as session:
+                    async with get_database_manager().get_async_session() as session:
                         await session.execute(text("""
                             INSERT INTO strategy_metrics 
                             (strategy_config_id, timestamp, pnl, positions_count, 
@@ -354,7 +354,7 @@ class StrategyProcessRunner:
             )
             
             # Update strategy status to ERROR
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'ERROR' 

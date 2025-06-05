@@ -1,0 +1,671 @@
+// Prisma Schema for Trading Engine
+// Complete schema matching the SQLAlchemy models
+
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum BrokerName {
+  ANGEL_ONE
+  ZERODHA
+  UPSTOX
+  FYERS
+  ALICE_BLUE
+}
+
+enum RiskLevel {
+  CONSERVATIVE
+  MODERATE
+  AGGRESSIVE
+  CUSTOM
+}
+
+enum StrategyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  STOPPED
+  ERROR
+  BACKTESTING
+}
+
+enum AssetClass {
+  EQUITY
+  DERIVATIVES
+  CRYPTO
+  COMMODITIES
+  FOREX
+}
+
+enum TimeFrame {
+  SECOND_1
+  SECOND_5
+  SECOND_15
+  SECOND_30
+  MINUTE_1
+  MINUTE_3
+  MINUTE_5
+  MINUTE_15
+  MINUTE_30
+  HOUR_1
+  HOUR_4
+  DAY_1
+  WEEK_1
+  MONTH_1
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  SL
+  SL_M
+}
+
+enum ProductType {
+  DELIVERY
+  INTRADAY
+  MARGIN
+  NORMAL
+  CARRYFORWARD
+  BO
+  CO
+}
+
+enum OrderStatus {
+  PENDING
+  QUEUED
+  PLACED
+  OPEN
+  COMPLETE
+  CANCELLED
+  REJECTED
+  ERROR
+  UNKNOWN
+  SUBMITTED
+}
+
+enum NotificationType {
+  ORDER_EXECUTED
+  ORDER_CANCELLED
+  STRATEGY_STARTED
+  STRATEGY_STOPPED
+  RISK_VIOLATION
+  SYSTEM_ALERT
+  PRICE_ALERT
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+  ARCHIVED
+}
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  ORDER_PLACED
+  ORDER_CANCELLED
+  STRATEGY_CREATED
+  STRATEGY_UPDATED
+  STRATEGY_STARTED
+  STRATEGY_STOPPED
+  SETTINGS_CHANGED
+  PASSWORD_CHANGED
+  API_KEY_CREATED
+  API_KEY_DELETED
+}
+
+enum StrategyConfigStatus {
+  ACTIVE
+  STOPPED
+  ERROR
+  PAUSED
+}
+
+enum StrategyCommandType {
+  START
+  STOP
+  RESTART
+  PAUSE
+  RESUME
+  UPDATE_CONFIG
+}
+
+enum CommandStatus {
+  PENDING
+  EXECUTED
+  FAILED
+}
+
+// Models
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  username          String    @unique
+  hashedPassword    String
+  firstName         String?
+  lastName          String?
+  phone             String?
+  role              UserRole  @default(USER)
+  status            UserStatus @default(PENDING_VERIFICATION)
+  emailVerified     Boolean   @default(false)
+  phoneVerified     Boolean   @default(false)
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  lastLoginAt       DateTime?
+  loginAttempts     Int       @default(0)
+  lockedUntil       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  profile               UserProfile?
+  brokerConfigs         BrokerConfig[]
+  strategies            Strategy[]
+  orders                Order[]
+  trades                Trade[]
+  positions             Position[]
+  balance               Balance?
+  riskProfile           RiskProfile?
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  sessions              UserSession[]
+  apiKeys               ApiKey[]
+  watchlists            Watchlist[]
+  alerts                Alert[]
+  strategyConfigs       StrategyConfig[]
+  notificationSettings  NotificationSettings?
+  alertTemplates        AlertTemplate[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id                String    @id @default(uuid())
+  userId            String    @unique
+  avatar            String?
+  bio               String?
+  timezone          String    @default("Asia/Kolkata")
+  language          String    @default("en")
+  tradingExperience String?
+  riskTolerance     String?
+  investmentGoals   String?
+  preferredAssets   String[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model UserSession {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  userId      String
+  name        String
+  keyHash     String    @unique
+  permissions String[]
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+model BrokerConfig {
+  id           String      @id @default(uuid())
+  userId       String
+  brokerName   BrokerName
+  displayName  String?
+  apiKey       String
+  clientId     String
+  password     String
+  totpSecret   String?
+  accessToken  String?
+  refreshToken String?
+  isActive     Boolean     @default(true)
+  isConnected  Boolean     @default(false)
+  lastSyncAt   DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("broker_configs")
+}
+
+model RiskProfile {
+  id                      String     @id @default(uuid())
+  userId                  String     @unique
+  riskLevel               RiskLevel  @default(MODERATE)
+  maxDailyLossPct         Float      @default(0.02)
+  maxWeeklyLossPct        Float      @default(0.05)
+  maxMonthlyLossPct       Float      @default(0.10)
+  maxPositionSizePct      Float      @default(0.10)
+  maxOrderValue           Float      @default(50000)
+  maxOrdersPerMinute      Int        @default(10)
+  maxExposurePerSymbol    Float      @default(0.05)
+  stopLossEnabled         Boolean    @default(true)
+  defaultStopLossPct      Float      @default(0.02)
+  takeProfitEnabled       Boolean    @default(true)
+  defaultTakeProfitPct    Float      @default(0.04)
+  allowedAssetClasses     String[]
+  allowedExchanges        String[]
+  tradingHoursOnly        Boolean    @default(true)
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("risk_profiles")
+}
+
+model Strategy {
+  id              String          @id @default(uuid())
+  userId          String
+  name            String
+  description     String?
+  strategyType    String
+  assetClass      AssetClass
+  symbols         String[]
+  timeframe       TimeFrame
+  status          StrategyStatus  @default(DRAFT)
+  parameters      Json?
+  riskParameters  Json?
+  maxPositions    Int             @default(5)
+  capitalAllocated Float          @default(100000)
+  totalPnl        Float           @default(0)
+  totalTrades     Int             @default(0)
+  winningTrades   Int             @default(0)
+  losingTrades    Int             @default(0)
+  winRate         Float           @default(0)
+  maxDrawdown     Float           @default(0)
+  startTime       String?
+  endTime         String?
+  activeDays      String[]
+  version         Int             @default(1)
+  lastExecutedAt  DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders          Order[]
+  backtests       Backtest[]
+  strategyLogs    StrategyLog[]
+  strategyConfigs StrategyConfig[]
+
+  @@map("strategies")
+}
+
+model Backtest {
+  id             String   @id @default(uuid())
+  strategyId     String
+  name           String
+  startDate      DateTime
+  endDate        DateTime
+  initialCapital Float
+  finalCapital   Float
+  totalReturn    Float
+  annualReturn   Float
+  sharpeRatio    Float
+  maxDrawdown    Float
+  totalTrades    Int
+  winRate        Float
+  trades         Json?
+  metrics        Json?
+  status         String   @default("RUNNING")
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@map("backtests")
+}
+
+model StrategyLog {
+  id         String   @id @default(uuid())
+  strategyId String
+  level      String
+  message    String
+  data       Json?
+  timestamp  DateTime @default(now())
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_logs")
+}
+
+model Order {
+  id             String       @id @default(uuid())
+  userId         String
+  strategyId     String?
+  symbol         String
+  exchange       String
+  side           OrderSide
+  orderType      OrderType
+  productType    ProductType
+  quantity       Int
+  price          Float?
+  triggerPrice   Float?
+  variety        String       @default("NORMAL")
+  brokerOrderId  String?
+  status         OrderStatus  @default(PENDING)
+  statusMessage  String?
+  filledQuantity Int          @default(0)
+  averagePrice   Float?
+  parentOrderId  String?
+  tags           String[]
+  notes          String?
+  placedAt       DateTime?
+  executedAt     DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategy     Strategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  trades       Trade[]
+  parentOrder  Order?   @relation("OrderHierarchy", fields: [parentOrderId], references: [id])
+  childOrders  Order[]  @relation("OrderHierarchy")
+
+  @@map("orders")
+}
+
+model Trade {
+  id             String      @id @default(uuid())
+  userId         String
+  orderId        String
+  tradeId        String?
+  symbol         String
+  exchange       String
+  side           OrderSide
+  quantity       Int
+  price          Float
+  productType    ProductType
+  orderType      OrderType
+  brokerage      Float       @default(0)
+  taxes          Float       @default(0)
+  totalCharges   Float       @default(0)
+  netAmount      Float
+  tradeTimestamp DateTime?
+  createdAt      DateTime    @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("trades")
+}
+
+model Position {
+  id               String      @id @default(uuid())
+  userId           String
+  symbol           String
+  exchange         String
+  productType      ProductType
+  quantity         Int
+  averagePrice     Float
+  lastTradedPrice  Float
+  pnl              Float
+  realizedPnl      Float       @default(0)
+  marketValue      Float
+  dayChange        Float       @default(0)
+  dayChangePct     Float       @default(0)
+  firstBuyDate     DateTime?
+  lastTradeDate    DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("positions")
+}
+
+model Balance {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  availableCash    Float    @default(0)
+  usedMargin       Float    @default(0)
+  totalBalance     Float    @default(0)
+  portfolioValue   Float    @default(0)
+  totalPnl         Float    @default(0)
+  dayPnl           Float    @default(0)
+  buyingPower      Float    @default(0)
+  marginUsed       Float    @default(0)
+  marginAvailable  Float    @default(0)
+  lastUpdated      DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("balances")
+}
+
+model Watchlist {
+  id          String   @id @default(uuid())
+  userId      String
+  name        String
+  description String?
+  symbols     String[]
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("watchlists")
+}
+
+model MarketData {
+  id            String    @id @default(uuid())
+  symbol        String
+  exchange      String
+  open          Float
+  high          Float
+  low           Float
+  close         Float
+  volume        Int
+  previousClose Float?
+  change        Float?
+  changePct     Float?
+  timestamp     DateTime
+  timeframe     TimeFrame
+  createdAt     DateTime  @default(now())
+
+  @@map("market_data")
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  data      Json?
+  status    NotificationStatus @default(UNREAD)
+  createdAt DateTime           @default(now())
+  readAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model Alert {
+  id          String    @id @default(uuid())
+  userId      String
+  symbol      String
+  exchange    String
+  condition   String
+  targetPrice Float
+  isActive    Boolean   @default(true)
+  isTriggered Boolean   @default(false)
+  triggeredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("alerts")
+}
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  userId    String?
+  action    AuditAction
+  resource  String?
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  timestamp DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+model SystemConfig {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  isPublic    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_config")
+}
+
+model StrategyConfig {
+  id         String               @id @default(uuid())
+  userId     String
+  strategyId String?
+  name       String               @unique
+  className  String
+  modulePath String
+  configJson Json
+  status     StrategyConfigStatus @default(ACTIVE)
+  autoStart  Boolean              @default(true)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategy  Strategy?          @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  commands  StrategyCommand[]
+  metrics   StrategyMetric[]
+
+  @@map("strategy_configs")
+}
+
+model StrategyCommand {
+  id               String              @id @default(uuid())
+  strategyConfigId String
+  command          StrategyCommandType
+  parameters       Json?
+  status           CommandStatus       @default(PENDING)
+  createdAt        DateTime            @default(now())
+  executedAt       DateTime?
+
+  strategyConfig StrategyConfig @relation(fields: [strategyConfigId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_commands")
+}
+
+model StrategyMetric {
+  id               String   @id @default(uuid())
+  strategyConfigId String
+  timestamp        DateTime @default(now())
+  pnl              Decimal  @default(0)
+  positionsCount   Int      @default(0)
+  ordersCount      Int      @default(0)
+  successRate      Decimal  @default(0)
+  metricsJson      Json?
+
+  strategyConfig StrategyConfig @relation(fields: [strategyConfigId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_metrics")
+}
+
+model NotificationSettings {
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  orderExecution         Boolean  @default(true)
+  strategyStatus         Boolean  @default(true)
+  priceAlerts            Boolean  @default(true)
+  riskViolations         Boolean  @default(true)
+  smsRiskViolations      Boolean  @default(true)
+  smsOrderFailures       Boolean  @default(true)
+  smsAccountSecurity     Boolean  @default(true)
+  smsSystemDowntime      Boolean  @default(true)
+  emailDailySummary      Boolean  @default(false)
+  emailWeeklyReport      Boolean  @default(true)
+  emailMonthlyStatement  Boolean  @default(true)
+  emailRegulatory        Boolean  @default(true)
+  maxAlertsPerMinute     Int      @default(10)
+  quietHoursStart        String?
+  quietHoursEnd          String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+model AlertTemplate {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  symbol    String
+  exchange  String
+  condition String
+  message   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("alert_templates")
+} 

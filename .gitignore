@@ -24,6 +24,13 @@ __pycache__/
 venv/
 env/
 ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
 
 # Node.js (for PM2)
 node_modules/
@@ -49,6 +56,8 @@ Thumbs.db
 backup_*/
 *.backup
 *.bak
+*.old
+*~
 
 # Temporary files
 tmp/
@@ -58,7 +67,16 @@ temp/
 # Production artifacts
 deployment/
 *.pid
-core.* 
+core.*
 
 # Data
 data/
+
+# Documentation artifacts
+site/
+docs/_build/
+
+# Cache and temporary files
+.cache/
+.tox/
+.nox/

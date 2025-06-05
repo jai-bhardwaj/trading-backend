@@ -17,7 +17,7 @@ import redis.asyncio as redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import db_manager, RedisKeys
+from app.database import get_database_manager, RedisKeys
 from app.core.strategy_executor import StrategyExecutor
 from app.core.notification_service import NotificationService
 
@@ -71,7 +71,7 @@ class StrategyEngineManager:
         """Initialize the strategy engine manager."""
         try:
             # Get Redis client for real-time communication
-            self.redis_client = await db_manager.get_redis()
+            self.redis_client = await get_database_manager().get_redis()
             
             # Initialize notification service
             self.notification_service = NotificationService()
@@ -115,7 +115,7 @@ class StrategyEngineManager:
     async def _auto_start_strategies(self):
         """Auto-start strategies marked for auto-start."""
         try:
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 # Query strategies with auto_start = true
                 query = text("""
                     SELECT id, user_id, strategy_id, name, class_name, 
@@ -147,7 +147,7 @@ class StrategyEngineManager:
         """Process strategy commands from the database."""
         while self.running:
             try:
-                async with db_manager.get_async_session() as session:
+                async with get_database_manager().get_async_session() as session:
                     # Get pending commands
                     query = text("""
                         SELECT sc.id, sc.strategy_config_id, sc.command, sc.parameters,
@@ -270,7 +270,7 @@ class StrategyEngineManager:
             self.processes[config_id] = strategy_process
             
             # Update status in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'ACTIVE' 
@@ -293,7 +293,7 @@ class StrategyEngineManager:
             logger.error(f"Failed to start strategy process {config_id}: {e}")
             
             # Update status to ERROR
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'ERROR' 
@@ -319,7 +319,7 @@ class StrategyEngineManager:
             del self.processes[config_id]
             
             # Update status in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'STOPPED' 
@@ -345,7 +345,7 @@ class StrategyEngineManager:
             strategy_process.status = StrategyConfigStatus.PAUSED
             
             # Update status in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'PAUSED' 
@@ -371,7 +371,7 @@ class StrategyEngineManager:
             strategy_process.status = StrategyConfigStatus.ACTIVE
             
             # Update status in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'ACTIVE' 
@@ -430,7 +430,7 @@ class StrategyEngineManager:
                 del self.processes[config_id]
             
             # Update status in database
-            async with db_manager.get_async_session() as session:
+            async with get_database_manager().get_async_session() as session:
                 await session.execute(text("""
                     UPDATE strategy_configs 
                     SET status = 'ERROR' 
