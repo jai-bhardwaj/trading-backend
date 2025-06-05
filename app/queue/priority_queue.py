@@ -13,6 +13,7 @@ from enum import Enum
 
 from .redis_client import get_redis_connection
 from .order_queue import QueuedOrder, QueuePriority
+from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class PriorityOrderQueue:
             order_data = json.dumps({
                 'order': order.__dict__,
                 'metadata': metadata.__dict__,
-                'enqueued_at': datetime.utcnow().isoformat(),
+                'enqueued_at': datetime_now().isoformat(),
                 'priority_score': order.metadata['priority_score']
             })
             
@@ -180,7 +181,7 @@ class PriorityOrderQueue:
         if metadata.deadline:
             try:
                 deadline = datetime.fromisoformat(metadata.deadline)
-                time_to_deadline = (deadline - datetime.utcnow()).total_seconds()
+                time_to_deadline = (deadline - datetime_now()).total_seconds()
                 if time_to_deadline > 0:
                     # Higher score for closer deadlines
                     time_score = max(1.0, 3600 / max(60, time_to_deadline))
@@ -245,7 +246,7 @@ class PriorityOrderQueue:
             
             assignment_data = {
                 'worker_id': worker_id,
-                'assigned_at': datetime.utcnow().isoformat(),
+                'assigned_at': datetime_now().isoformat(),
                 'status': 'processing'
             }
             
@@ -269,7 +270,7 @@ class PriorityOrderQueue:
             # Update counters
             redis_client.hincrby(self.stats_key, f"{queue_type}_{action}", 1)
             redis_client.hincrby(self.stats_key, f"total_{action}", 1)
-            redis_client.hset(self.stats_key, "last_updated", datetime.utcnow().isoformat())
+            redis_client.hset(self.stats_key, "last_updated", datetime_now().isoformat())
             
         except Exception as e:
             logger.error(f"❌ Failed to update priority stats: {e}")
@@ -379,7 +380,7 @@ class PriorityOrderQueue:
         """Clean up expired worker assignments"""
         try:
             redis_client = get_redis_connection()
-            cutoff_time = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+            cutoff_time = datetime_now() - timedelta(minutes=max_age_minutes)
             
             # Get all assignments
             assignments = redis_client.hgetall(self.worker_assignment)

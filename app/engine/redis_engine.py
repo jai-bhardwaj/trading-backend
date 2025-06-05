@@ -19,9 +19,10 @@ from app.models.base import Order, OrderStatus, Strategy, StrategyStatus, User, 
 from app.queue import QueueManager, WorkerConfig, QueueConfig, QueuedOrder, PriorityOrderMetadata
 from app.queue.priority_queue import OrderUrgency
 from app.brokers import get_broker_instance
-from app.strategies.registry import StrategyRegistry
-from app.strategies.base import SignalType
+from app.strategies import AutomaticStrategyRegistry  # Import from strategies module, not registry directly
+from app.strategies.base import SignalType, StrategySignal
 from app.core.instrument_manager import get_instrument_manager
+from app.utils.timezone_utils import ist_utcnow as datetime_now
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class RedisBasedTradingEngine:
         
         # Engine state
         self.is_running = False
-        self.start_time: Optional[datetime] = None
+        self.start_time = datetime_now()
         
         # Strategy management
         self.active_strategies: Dict[str, Any] = {}
@@ -77,7 +78,12 @@ class RedisBasedTradingEngine:
         # Setup signal handlers
         self._setup_signal_handlers()
         
-        self.db_manager = db_manager or DatabaseManager()
+        # Use provided database manager or get global instance
+        if db_manager:
+            self.db_manager = db_manager
+        else:
+            from app.database import get_database_manager
+            self.db_manager = get_database_manager()
     
     async def start(self):
         """Start the Redis-based trading engine"""
@@ -87,9 +93,28 @@ class RedisBasedTradingEngine:
         
         logger.info("🚀 Starting Redis-Based Trading Engine")
         self.is_running = True
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime_now()
         
         try:
+            # Initialize strategy registry first
+            logger.info("📋 Initializing strategy registry...")
+            from app.strategies import initialize_strategies
+            initialize_strategies(force_reload=True)
+            
+            # Verify strategies are loaded
+            available_strategies = AutomaticStrategyRegistry.list_strategies()
+            logger.info(f"📈 Available strategies: {available_strategies}")
+            
+            # Test specific strategy lookup
+            test_strategy = AutomaticStrategyRegistry.get_strategy_class('RealtimeTestStrategy')
+            logger.info(f"🔍 RealtimeTestStrategy lookup result: {test_strategy}")
+            
+            if not available_strategies:
+                logger.warning("⚠️ No strategies found in registry, attempting direct initialization...")
+                AutomaticStrategyRegistry.initialize(auto_discover=True)
+                available_strategies = AutomaticStrategyRegistry.list_strategies()
+                logger.info(f"📈 After direct init: {available_strategies}")
+            
             # Start queue manager
             if not self.queue_manager.start():
                 logger.error("❌ Failed to start queue manager")
@@ -128,7 +153,7 @@ class RedisBasedTradingEngine:
         
         # Calculate uptime
         if self.start_time:
-            uptime = datetime.utcnow() - self.start_time
+            uptime = datetime_now() - self.start_time
             logger.info(f"📊 Engine uptime: {uptime}")
             logger.info(f"📊 Orders processed: {self.orders_processed}")
             logger.info(f"📊 Orders failed: {self.orders_failed}")
@@ -139,7 +164,7 @@ class RedisBasedTradingEngine:
     async def submit_order(self, order_id: str, priority: int = 2, urgency: str = OrderUrgency.NORMAL.value) -> bool:
         """Submit an order to the Redis queue for processing"""
         try:
-            async with self.db_manager.get_session() as db:
+            async with self.db_manager.get_async_session() as db:
                 # Get order from database
                 order = await db.get(Order, order_id)
                 if not order:
@@ -193,7 +218,7 @@ class RedisBasedTradingEngine:
     async def submit_urgent_order(self, order_id: str, urgency: str = OrderUrgency.STOP_LOSS.value, deadline: Optional[datetime] = None) -> bool:
         """Submit an urgent order with high priority"""
         try:
-            async with self.db_manager.get_session() as db:
+            async with self.db_manager.get_async_session() as db:
                 order = await db.get(Order, order_id)
                 if not order:
                     logger.error(f"❌ Order {order_id} not found")
@@ -243,12 +268,11 @@ class RedisBasedTradingEngine:
     async def _load_active_strategies(self):
         """Load active strategies from database"""
         try:
-            async with self.db_manager.get_session() as db:
+            async with self.db_manager.get_async_session() as db:
                 # Get active strategies
                 result = await db.execute(
                     select(Strategy).where(
-                        Strategy.status == StrategyStatus.ACTIVE,
-                        Strategy.is_live == True
+                        Strategy.status == StrategyStatus.ACTIVE
                     )
                 )
                 strategies = result.scalars().all()
@@ -323,58 +347,70 @@ class RedisBasedTradingEngine:
     async def _execute_strategy(self, strategy_id: str, strategy: Strategy):
         """Execute a single strategy"""
         try:
-            # Get strategy implementation from registry
-            strategy_class = StrategyRegistry.get_strategy_class(strategy.strategy_type)
-            if not strategy_class:
-                logger.error(f"❌ Strategy type {strategy.strategy_type} not found in registry")
-                return
+            # Get or create strategy instance
+            strategy_instance = self.active_strategies[strategy_id].get('instance')
             
-            # Get symbols from instrument manager based on strategy asset class
-            instrument_manager = await get_instrument_manager(self.db_manager)
+            if not strategy_instance:
+                # Create strategy instance for the first time
+                strategy_class = AutomaticStrategyRegistry.get_strategy_class(strategy.strategy_type)
+                if not strategy_class:
+                    logger.error(f"❌ Strategy type {strategy.strategy_type} not found in registry")
+                    return
+                
+                # Get symbols from instrument manager based on strategy asset class
+                instrument_manager = await get_instrument_manager(self.db_manager)
+                
+                # Get symbols for this strategy's asset class
+                strategy_symbols = instrument_manager.get_all_symbols(strategy.asset_class)
+                if not strategy_symbols:
+                    strategy_symbols = strategy.symbols or ["RELIANCE", "TCS", "INFY"]  # Fallback
+                else:
+                    strategy_symbols = strategy_symbols[:10]  # Limit symbols per strategy
+                
+                # Create strategy instance
+                from app.strategies.base import StrategyConfig, AssetClass, TimeFrame as StrategyTimeFrame
+                
+                # Convert TimeFrame enum
+                timeframe_mapping = {
+                    "MINUTE_1": StrategyTimeFrame.MINUTE_1,
+                    "MINUTE_5": StrategyTimeFrame.MINUTE_5,
+                    "MINUTE_15": StrategyTimeFrame.MINUTE_15,
+                    "HOUR_1": StrategyTimeFrame.HOUR_1,
+                    "HOUR_4": StrategyTimeFrame.HOUR_4,
+                    "DAY_1": StrategyTimeFrame.DAILY,
+                    "WEEK_1": StrategyTimeFrame.WEEKLY
+                }
+                
+                strategy_timeframe = timeframe_mapping.get(strategy.timeframe.value, StrategyTimeFrame.MINUTE_5)
+                
+                config = StrategyConfig(
+                    name=strategy.name,
+                    asset_class=AssetClass(strategy.asset_class.value),
+                    symbols=strategy_symbols,
+                    timeframe=strategy_timeframe,
+                    parameters=strategy.parameters or {},
+                    risk_parameters=strategy.risk_parameters or {},
+                    is_active=True,
+                    paper_trade=False  # Default to live trading since isPaperTrading field was removed
+                )
+                
+                strategy_instance = strategy_class(config)
+                strategy_instance.initialize()
+                
+                # Store strategy instance for reuse
+                self.active_strategies[strategy_id]['instance'] = strategy_instance
+                logger.info(f"✅ Created and cached strategy instance: {strategy.name}")
             
-            # Get symbols for this strategy's asset class
-            strategy_symbols = instrument_manager.get_all_symbols(strategy.asset_class)
-            if not strategy_symbols:
-                strategy_symbols = strategy.symbols or ["RELIANCE", "TCS", "INFY"]  # Fallback
-            else:
-                strategy_symbols = strategy_symbols[:10]  # Limit symbols per strategy
+            # Process each symbol using the cached strategy instance
+            strategy_symbols = strategy_instance.symbols
+            logger.info(f"🔄 Executing strategy {strategy.name} for symbols: {strategy_symbols}")
             
-            # Create strategy instance
-            from app.strategies.base import StrategyConfig, AssetClass, TimeFrame as StrategyTimeFrame
-            
-            # Convert TimeFrame enum
-            timeframe_mapping = {
-                "MINUTE_1": StrategyTimeFrame.MINUTE_1,
-                "MINUTE_5": StrategyTimeFrame.MINUTE_5,
-                "MINUTE_15": StrategyTimeFrame.MINUTE_15,
-                "HOUR_1": StrategyTimeFrame.HOUR_1,
-                "HOUR_4": StrategyTimeFrame.HOUR_4,
-                "DAY_1": StrategyTimeFrame.DAILY,
-                "WEEK_1": StrategyTimeFrame.WEEKLY
-            }
-            
-            strategy_timeframe = timeframe_mapping.get(strategy.timeframe.value, StrategyTimeFrame.MINUTE_5)
-            
-            config = StrategyConfig(
-                name=strategy.name,
-                asset_class=AssetClass(strategy.asset_class.value),
-                symbols=strategy_symbols,
-                timeframe=strategy_timeframe,
-                parameters=strategy.parameters or {},
-                risk_parameters=strategy.risk_parameters or {},
-                is_active=True,
-                paper_trade=strategy.is_paper_trading
-            )
-            
-            strategy_instance = strategy_class(config)
-            strategy_instance.initialize()
-            
-            # Process each symbol
             for symbol in strategy_symbols:
                 # Get market data
                 market_data = await self._get_market_data(symbol, strategy.timeframe)
                 
                 if market_data:
+                    logger.info(f"📊 Generated market data for {symbol}: price={market_data.close}")
                     # Process market data and get signal
                     signal = strategy_instance.process_market_data(market_data)
                     
@@ -382,9 +418,13 @@ class RedisBasedTradingEngine:
                         # Create order from signal
                         await self._create_order_from_signal(strategy, signal)
                         logger.info(f"🎯 Strategy {strategy.name} generated signal for {symbol}: {signal.signal_type.value}")
+                    else:
+                        logger.debug(f"📊 No signal generated for {symbol}")
+                else:
+                    logger.warning(f"❌ Failed to generate market data for {symbol}")
             
             # Update strategy execution time
-            self.active_strategies[strategy_id]['last_execution'] = datetime.utcnow()
+            self.active_strategies[strategy_id]['last_execution'] = datetime_now()
             self.active_strategies[strategy_id]['execution_count'] += 1
             
         except Exception as e:
@@ -408,12 +448,75 @@ class RedisBasedTradingEngine:
         }
         
         interval = intervals.get(timeframe.value, timedelta(minutes=5))
-        return datetime.utcnow() - last_execution >= interval
+        return datetime_now() - last_execution >= interval
     
     async def _get_market_data(self, symbol: str, timeframe):
-        """Get market data for symbol"""
+        """Get live market data from Angel One broker"""
         try:
             from app.strategies.base import MarketData, AssetClass
+            
+            # Get broker instance for live data
+            try:
+                from app.models.base import BrokerConfig, BrokerName
+                from app.brokers.base import BrokerRegistry
+                from sqlalchemy import select
+                
+                # Get broker configuration from database
+                async with self.db_manager.get_async_session() as session:
+                    result = await session.execute(
+                        select(BrokerConfig).where(BrokerConfig.broker_name == BrokerName.ANGEL_ONE)
+                    )
+                    broker_config = result.scalar_one_or_none()
+                    
+                    if not broker_config:
+                        logger.warning("⚠️ No Angel One broker config found, using simulated data")
+                        raise Exception("No broker config")
+                    
+                    # Get broker instance
+                    broker = BrokerRegistry.get_broker(broker_config)
+                    
+                    # Ensure authentication
+                    if not broker.is_authenticated:
+                        await broker.authenticate()
+                
+                # Convert symbol format for Angel One API
+                symbol_with_suffix = f"{symbol}-EQ"
+                
+                # Get live market data
+                ltp_data = await broker.get_ltp([symbol_with_suffix])
+                
+                if ltp_data and symbol_with_suffix in ltp_data:
+                    live_price = ltp_data[symbol_with_suffix]['ltp']
+                    
+                    # Create market data object with live price
+                    market_data = MarketData(
+                        symbol=symbol,  # Use simple symbol name
+                        timestamp=datetime_now(),
+                        open=live_price,  # Use live price for all OHLC in real-time
+                        high=live_price,
+                        low=live_price,
+                        close=live_price,
+                        volume=100000,  # Default volume (could be enhanced)
+                        asset_class=AssetClass.EQUITY,
+                        exchange="NSE",
+                        additional_data={
+                            'live_price': live_price,
+                            'source': 'angel_one_live',
+                            'symbol_with_suffix': symbol_with_suffix
+                        }
+                    )
+                    
+                    logger.info(f"📊 Live market data for {symbol}: ₹{live_price}")
+                    return market_data
+                    
+                else:
+                    logger.warning(f"⚠️ No live data available for {symbol_with_suffix}")
+                    
+            except Exception as broker_error:
+                logger.warning(f"⚠️ Failed to get live data from broker: {broker_error}")
+                logger.info(f"📊 Falling back to simulated data for {symbol}")
+            
+            # Fallback to simulated data if live data fails
             import random
             
             # Get base price for symbol
@@ -440,7 +543,7 @@ class RedisBasedTradingEngine:
             
             market_data = MarketData(
                 symbol=symbol,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime_now(),
                 open=base_price,
                 high=high,
                 low=low,
@@ -451,14 +554,16 @@ class RedisBasedTradingEngine:
                 additional_data={
                     'change': current_price - base_price,
                     'change_pct': change_pct * 100,
-                    'previous_close': base_price
+                    'previous_close': base_price,
+                    'source': 'simulated_fallback'
                 }
             )
             
+            logger.debug(f"📊 Simulated market data for {symbol}: ₹{current_price}")
             return market_data
             
         except Exception as e:
-            logger.error(f"Error generating market data for {symbol}: {e}")
+            logger.error(f"Error getting market data for {symbol}: {e}")
             return None
     
     async def _create_order_from_signal(self, strategy: Strategy, signal):
@@ -466,7 +571,7 @@ class RedisBasedTradingEngine:
         try:
             from app.strategies.base import SignalType
             
-            async with self.db_manager.get_session() as db:
+            async with self.db_manager.get_async_session() as db:
                 # Determine order side based on signal type
                 if signal.signal_type == SignalType.BUY:
                     order_side = OrderSide.BUY
@@ -488,7 +593,6 @@ class RedisBasedTradingEngine:
                     quantity=signal.quantity or 1,
                     price=signal.price or 0.0,
                     status=OrderStatus.PENDING,
-                    is_paper_trade=strategy.is_paper_trading,
                     notes=f"Generated by strategy: {strategy.name} with {signal.confidence:.1%} confidence"
                 )
                 
@@ -512,7 +616,7 @@ class RedisBasedTradingEngine:
         """Sync pending orders from database to queue"""
         while self.is_running:
             try:
-                async with self.db_manager.get_session() as db:
+                async with self.db_manager.get_async_session() as db:
                     # Get pending orders that are not yet queued
                     pending_orders = await db.execute(
                         select(Order).where(
@@ -613,9 +717,7 @@ class RedisBasedTradingEngine:
     
     def get_engine_stats(self) -> Dict[str, Any]:
         """Get comprehensive engine statistics"""
-        uptime_seconds = 0
-        if self.start_time:
-            uptime_seconds = (datetime.utcnow() - self.start_time).total_seconds()
+        uptime_seconds = (datetime_now() - self.start_time).total_seconds()
         
         queue_stats = self.queue_manager.get_comprehensive_stats()
         
@@ -690,6 +792,129 @@ class RedisBasedTradingEngine:
             logger.info(f"[perform_risk_checks] Queue health: {health}")
             if health.get('status') == 'critical':
                 await self._handle_critical_health(health)
+
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Comprehensive health check for the trading engine
+        
+        Returns:
+            Dict containing health status and metrics
+        """
+        health = {
+            "engine_running": self.is_running,
+            "workers_healthy": True,
+            "queue_healthy": True,
+            "database_healthy": False,
+            "redis_healthy": False,
+            "overall_healthy": False,
+            "errors": []
+        }
+        
+        try:
+            # Check database health through db_manager
+            if self.db_manager:
+                db_health = await self.db_manager.health_check()
+                health["database_healthy"] = db_health.get("database", {}).get("healthy", False)
+                health["redis_healthy"] = db_health.get("redis", {}).get("healthy", False)
+            
+            # Check queue manager health
+            if self.queue_manager:
+                try:
+                    queue_health = await self.queue_manager.health_check()
+                    health["queue_healthy"] = queue_health.get("healthy", False)
+                except Exception as e:
+                    health["queue_healthy"] = False
+                    health["errors"].append(f"Queue health check failed: {e}")
+            
+            # Check worker status
+            try:
+                workers_status = await self.queue_manager.get_worker_status()
+                healthy_workers = sum(1 for status in workers_status.values() if status == "running")
+                total_workers = len(workers_status)
+                health["workers_healthy"] = healthy_workers == total_workers
+                health["worker_details"] = {
+                    "healthy": healthy_workers,
+                    "total": total_workers,
+                    "status": workers_status
+                }
+            except Exception as e:
+                health["workers_healthy"] = False
+                health["errors"].append(f"Worker status check failed: {e}")
+            
+            # Overall health
+            health["overall_healthy"] = (
+                health["engine_running"] and
+                health["workers_healthy"] and
+                health["queue_healthy"] and
+                health["database_healthy"] and
+                health["redis_healthy"]
+            )
+            
+        except Exception as e:
+            health["errors"].append(f"Health check error: {e}")
+            logger.error(f"❌ Health check failed: {e}")
+        
+        return health
+    
+    async def get_performance_metrics(self) -> Dict[str, Any]:
+        """
+        Get comprehensive performance metrics for the trading engine
+        
+        Returns:
+            Dict containing performance metrics
+        """
+        uptime = (datetime_now() - self.start_time).total_seconds() if self.start_time else 0
+        
+        metrics = {
+            "orders_processed": self.orders_processed,
+            "orders_failed": self.orders_failed,
+            "strategies_executed": self.strategies_executed,
+            "uptime_seconds": uptime,
+            "queue_size": 0,
+            "worker_status": {},
+            "engine_running": self.is_running,
+            "active_strategies": len(self.active_strategies),
+            "success_rate": 0.0,
+            "processing_rate": 0.0
+        }
+        
+        try:
+            # Get queue metrics
+            if self.queue_manager:
+                queue_metrics = await self.queue_manager.get_performance_metrics()
+                metrics.update({
+                    "queue_size": queue_metrics.get("pending_orders", 0),
+                    "queue_metrics": queue_metrics
+                })
+            
+            # Get worker status
+            try:
+                worker_status = await self.queue_manager.get_worker_status()
+                metrics["worker_status"] = worker_status
+            except Exception as e:
+                logger.debug(f"Could not get worker status: {e}")
+                metrics["worker_status"] = {"error": str(e)}
+            
+            # Calculate success rate
+            total_orders = self.orders_processed + self.orders_failed
+            if total_orders > 0:
+                metrics["success_rate"] = (self.orders_processed / total_orders) * 100
+            
+            # Calculate processing rate (orders per minute)
+            if uptime > 0:
+                metrics["processing_rate"] = (total_orders / uptime) * 60
+            
+            # Add strategy execution metrics
+            metrics["strategy_metrics"] = {
+                "total_strategies": len(self.active_strategies),
+                "last_execution_times": dict(self.strategy_last_run)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting performance metrics: {e}")
+            metrics["error"] = str(e)
+        
+        return metrics
 
 # Main entry point for the Redis-based engine
 async def main():

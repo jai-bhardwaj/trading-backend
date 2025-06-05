@@ -15,6 +15,7 @@ from sqlalchemy import and_, func
 
 from app.models.base import Order, Position, Balance, Trade, User, Strategy as StrategyModel
 from app.strategies.base import StrategySignal, AssetClass
+from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class RiskViolation:
     current_value: float
     limit_value: float
     suggested_action: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime_now)
 
 class RiskManager:
     """
@@ -266,7 +267,7 @@ class RiskManager:
         
         try:
             # Calculate daily P&L
-            today = datetime.now().date()
+            today = datetime_now().date()
             daily_trades = db.query(Trade).filter(
                 and_(
                     Trade.user_id == context.user_id,
@@ -317,7 +318,7 @@ class RiskManager:
     def _check_order_rate_limits(self, context: RiskCheckContext) -> List[RiskViolation]:
         """Check order rate limiting"""
         violations = []
-        current_time = datetime.utcnow()
+        current_time = datetime_now()
         
         # Initialize user order history if not exists
         if context.user_id not in self.order_timestamps:
@@ -398,7 +399,7 @@ class RiskManager:
         """Check if trading is allowed at current time"""
         violations = []
         
-        current_time = datetime.now().time()
+        current_time = datetime_now().time()
         start_time = datetime.strptime(self.risk_limits.trading_start_time, "%H:%M").time()
         end_time = datetime.strptime(self.risk_limits.trading_end_time, "%H:%M").time()
         
@@ -452,7 +453,7 @@ class RiskManager:
     def get_risk_summary(self, user_id: str) -> Dict[str, Any]:
         """Get risk summary for user"""
         recent_violations = [v for v in self.violation_history 
-                           if v.timestamp > datetime.utcnow() - timedelta(hours=24)]
+                           if v.timestamp > datetime_now() - timedelta(hours=24)]
         
         return {
             'total_violations_24h': len(recent_violations),

@@ -15,6 +15,7 @@ from dataclasses import asdict
 from app.monitoring.strategy_monitor import strategy_monitor, StrategyHealth, MonitoringMetrics
 from app.monitoring.alert_manager import alert_manager, AlertSeverity, AlertStatus
 from app.database import DatabaseManager
+from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class MonitoringDashboard:
     """
     
     def __init__(self):
-        self.last_update = datetime.utcnow()
+        self.last_update = datetime_now()
         self._dashboard_data: Dict[str, Any] = {}
         self._update_interval = 30  # seconds
     
@@ -52,9 +53,9 @@ class MonitoringDashboard:
             'performance': await self._get_performance_data(),
             'alerts': await self._get_alerts_data(),
             'system': await self._get_system_data(),
-            'last_update': datetime.utcnow().isoformat()
+            'last_update': datetime_now().isoformat()
         }
-        self.last_update = datetime.utcnow()
+        self.last_update = datetime_now()
     
     async def _get_overview_data(self) -> Dict[str, Any]:
         """Get overview dashboard data"""
@@ -104,8 +105,8 @@ class MonitoringDashboard:
                         strategy_data.update({
                             'asset_class': getattr(strategy, 'assetClass', 'EQUITY'),
                             'symbols': getattr(strategy, 'symbols', []),
-                            'is_live': getattr(strategy, 'isLive', False),
-                            'is_paper_trading': getattr(strategy, 'isPaperTrading', True),
+                            'is_live': True,  # Default to live trading since isPaperTrading field was removed
+                            'is_paper_trading': False,  # Default to live trading since isPaperTrading field was removed
                             'capital_allocated': getattr(strategy, 'capitalAllocated', 0),
                             'created_at': strategy.createdAt.isoformat() if hasattr(strategy, 'createdAt') else None
                         })
@@ -146,7 +147,7 @@ class MonitoringDashboard:
             # Calculate from trades
             async with db_manager.get_session() as db:
                 trades = db.query(Trade).all()
-                today = datetime.utcnow().date()
+                today = datetime_now().date()
                 
                 for trade in trades:
                     trade_pnl = trade.netAmount - (trade.quantity * trade.price)
@@ -189,7 +190,7 @@ class MonitoringDashboard:
     
     async def _calculate_performance_by_period(self, db) -> Dict[str, Any]:
         """Calculate performance metrics by different time periods"""
-        now = datetime.utcnow()
+        now = datetime_now()
         periods = {
             'today': now.replace(hour=0, minute=0, second=0, microsecond=0),
             'week': now - timedelta(days=7),
@@ -231,7 +232,7 @@ class MonitoringDashboard:
             alerts_by_strategy[alert.strategy_id].append(alert.to_dict())
         
         # Recent alert trends
-        recent_alerts = [a for a in alert_history if a.created_at > datetime.utcnow() - timedelta(hours=24)]
+        recent_alerts = [a for a in alert_history if a.created_at > datetime_now() - timedelta(hours=24)]
         alert_trends = self._calculate_alert_trends(recent_alerts)
         
         return {
@@ -247,7 +248,7 @@ class MonitoringDashboard:
         """Calculate alert trends over time"""
         # Group alerts by hour for the last 24 hours
         hourly_counts = {}
-        now = datetime.utcnow()
+        now = datetime_now()
         
         for i in range(24):
             hour = now - timedelta(hours=i)

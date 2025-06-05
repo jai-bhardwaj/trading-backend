@@ -32,7 +32,6 @@ This is a high-performance, industrial-grade trading backend system built with P
 - **Broker Integration**: Angel One SmartAPI (extensible to other brokers)
 - **Process Management**: PM2 with ecosystem configuration
 - **Monitoring**: Custom health checks and performance metrics
-- **Testing**: Pytest with comprehensive test coverage
 
 ## Directory Structure
 
@@ -50,7 +49,6 @@ trading-backend/
 │   └── monitoring/               # Health checks and monitoring
 ├── config/                       # Configuration files
 ├── scripts/                      # Utility and management scripts
-├── tests/                        # Test suites
 ├── logs/                         # Application logs
 └── data/                         # Data files and instruments
 ```
@@ -361,20 +359,6 @@ Send Risk Notifications
 - Risk limit violations
 - Performance degradation
 - Broker connectivity issues
-
-## Testing Strategy
-
-### Test Coverage
-- Unit tests for core components
-- Integration tests for broker APIs
-- End-to-end trading flow tests
-- Performance and load testing
-- Mock broker for development
-
-### Test Structure
-- `tests/conftest.py`: Test configuration and fixtures
-- `tests/test_*.py`: Component-specific test suites
-- Mock data and scenarios for comprehensive testing
 
 ## Development Workflow
 

@@ -23,6 +23,7 @@ from sqlalchemy import (
     Text,
     JSON,
     func,
+    Numeric,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
@@ -184,6 +185,9 @@ class User(Base):
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
     watchlists = relationship("Watchlist", back_populates="user", cascade="all, delete-orphan")
     alerts = relationship("Alert", back_populates="user", cascade="all, delete-orphan")
+    strategy_configs = relationship("StrategyConfig", back_populates="user", cascade="all, delete-orphan")
+    notification_settings = relationship("NotificationSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    alert_templates = relationship("AlertTemplate", back_populates="user", cascade="all, delete-orphan")
 
 class UserProfile(Base):
     __tablename__ = "user_profiles"
@@ -192,7 +196,7 @@ class UserProfile(Base):
     user_id = Column("userId", String, ForeignKey("users.id"), unique=True, nullable=False)
     avatar = Column(String)
     bio = Column(String)
-    timezone = Column(String, default="UTC")
+    timezone = Column(String, default="Asia/Kolkata")
     language = Column(String, default="en")
     trading_experience = Column("tradingExperience", String)
     risk_tolerance = Column("riskTolerance", String)
@@ -295,10 +299,9 @@ class Strategy(Base):
     parameters = Column(JSON)
     risk_parameters = Column("riskParameters", JSON)
     
-    # Margin and Trading Configuration
-    margin = Column(Float, default=5.0)  # Margin amount (percentage or rupees)
-    margin_type = Column("marginType", String, default="percentage")  # "percentage" or "rupees"
-    base_price = Column("basePrice", Float, default=50000.0)  # Base price for percentage calculations
+    # Trading Configuration
+    max_positions = Column("maxPositions", Integer, default=5)
+    capital_allocated = Column("capitalAllocated", Float, default=100000)
     
     # Performance Metrics
     total_pnl = Column("totalPnl", Float, default=0)
@@ -306,32 +309,27 @@ class Strategy(Base):
     winning_trades = Column("winningTrades", Integer, default=0)
     losing_trades = Column("losingTrades", Integer, default=0)
     win_rate = Column("winRate", Float, default=0)
-    sharpe_ratio = Column("sharpeRatio", Float)
     max_drawdown = Column("maxDrawdown", Float, default=0)
-    
-    # Execution Settings
-    is_live = Column("isLive", Boolean, default=False)
-    is_paper_trading = Column("isPaperTrading", Boolean, default=True)
-    max_positions = Column("maxPositions", Integer, default=5)
-    capital_allocated = Column("capitalAllocated", Float, default=100000)
     
     # Scheduling
     start_time = Column("startTime", String)
     end_time = Column("endTime", String)
     active_days = Column("activeDays", ARRAY(String))
     
-    # Metadata
+    # Versioning and Execution
     version = Column(Integer, default=1)
     last_executed_at = Column("lastExecutedAt", DateTime)
-    next_execution_at = Column("nextExecutionAt", DateTime)
+    
+    # Timestamps
     created_at = Column("createdAt", DateTime, default=func.now())
     updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now())
 
     # Relations
     user = relationship("User", back_populates="strategies")
-    orders = relationship("Order", back_populates="strategy")
+    orders = relationship("Order", back_populates="strategy", cascade="all, delete-orphan")
     backtests = relationship("Backtest", back_populates="strategy", cascade="all, delete-orphan")
     strategy_logs = relationship("StrategyLog", back_populates="strategy", cascade="all, delete-orphan")
+    strategy_configs = relationship("StrategyConfig", back_populates="strategy", cascade="all, delete-orphan")
 
 class Backtest(Base):
     __tablename__ = "backtests"
@@ -400,7 +398,6 @@ class Order(Base):
     average_price = Column("averagePrice", Float)
     
     # Metadata
-    is_paper_trade = Column("isPaperTrade", Boolean, default=False)
     parent_order_id = Column("parentOrderId", String, ForeignKey("orders.id"))
     tags = Column(ARRAY(String))
     notes = Column(String)
@@ -601,4 +598,127 @@ class SystemConfig(Base):
     description = Column(String)
     is_public = Column("isPublic", Boolean, default=False)
     created_at = Column("createdAt", DateTime, default=func.now())
-    updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now()) 
+    updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now())
+
+# ============================================================================
+# ENHANCED STRATEGY EXECUTION
+# ============================================================================
+
+class StrategyConfigStatus(enum.Enum):
+    ACTIVE = "ACTIVE"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
+    PAUSED = "PAUSED"
+
+class StrategyCommandType(enum.Enum):
+    START = "START"
+    STOP = "STOP"
+    RESTART = "RESTART"
+    PAUSE = "PAUSE"
+    RESUME = "RESUME"
+    UPDATE_CONFIG = "UPDATE_CONFIG"
+
+class CommandStatus(enum.Enum):
+    PENDING = "PENDING"
+    EXECUTED = "EXECUTED"
+    FAILED = "FAILED"
+
+class StrategyConfig(Base):
+    __tablename__ = "strategy_configs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column("userId", String, ForeignKey("users.id"), nullable=False)
+    strategy_id = Column("strategyId", String, ForeignKey("strategies.id"))
+    name = Column(String, unique=True, nullable=False)
+    class_name = Column("className", String, nullable=False)
+    module_path = Column("modulePath", String, nullable=False)
+    config_json = Column("configJson", JSON, nullable=False)
+    status = Column(Enum(StrategyConfigStatus, name="StrategyConfigStatus"), default=StrategyConfigStatus.ACTIVE)
+    auto_start = Column("autoStart", Boolean, default=True)
+    created_at = Column("createdAt", DateTime, default=func.now())
+    updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now())
+
+    # Relations
+    user = relationship("User", back_populates="strategy_configs")
+    strategy = relationship("Strategy", back_populates="strategy_configs")
+    commands = relationship("StrategyCommand", back_populates="strategy_config", cascade="all, delete-orphan")
+    metrics = relationship("StrategyMetric", back_populates="strategy_config", cascade="all, delete-orphan")
+
+class StrategyCommand(Base):
+    __tablename__ = "strategy_commands"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    strategy_config_id = Column("strategyConfigId", String, ForeignKey("strategy_configs.id"), nullable=False)
+    command = Column(Enum(StrategyCommandType, name="StrategyCommandType"), nullable=False)
+    parameters = Column(JSON)
+    status = Column(Enum(CommandStatus, name="CommandStatus"), default=CommandStatus.PENDING)
+    created_at = Column("createdAt", DateTime, default=func.now())
+    executed_at = Column("executedAt", DateTime)
+
+    # Relations
+    strategy_config = relationship("StrategyConfig", back_populates="commands")
+
+class StrategyMetric(Base):
+    __tablename__ = "strategy_metrics"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    strategy_config_id = Column("strategyConfigId", String, ForeignKey("strategy_configs.id"), nullable=False)
+    timestamp = Column(DateTime, default=func.now())
+    pnl = Column(Numeric, default=0)
+    positions_count = Column("positionsCount", Integer, default=0)
+    orders_count = Column("ordersCount", Integer, default=0)
+    success_rate = Column("successRate", Numeric, default=0)
+    metrics_json = Column("metricsJson", JSON)
+
+    # Relations
+    strategy_config = relationship("StrategyConfig", back_populates="metrics")
+
+class NotificationSettings(Base):
+    __tablename__ = "notification_settings"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column("userId", String, ForeignKey("users.id"), unique=True, nullable=False)
+    
+    # Real-time alerts (Redis-based)
+    order_execution = Column("orderExecution", Boolean, default=True)
+    strategy_status = Column("strategyStatus", Boolean, default=True)
+    price_alerts = Column("priceAlerts", Boolean, default=True)
+    risk_violations = Column("riskViolations", Boolean, default=True)
+    
+    # SMS alerts (critical only)
+    sms_risk_violations = Column("smsRiskViolations", Boolean, default=True)
+    sms_order_failures = Column("smsOrderFailures", Boolean, default=True)
+    sms_account_security = Column("smsAccountSecurity", Boolean, default=True)
+    sms_system_downtime = Column("smsSystemDowntime", Boolean, default=True)
+    
+    # Email notifications
+    email_daily_summary = Column("emailDailySummary", Boolean, default=False)
+    email_weekly_report = Column("emailWeeklyReport", Boolean, default=True)
+    email_monthly_statement = Column("emailMonthlyStatement", Boolean, default=True)
+    email_regulatory = Column("emailRegulatory", Boolean, default=True)
+    
+    # Alert frequency controls
+    max_alerts_per_minute = Column("maxAlertsPerMinute", Integer, default=10)
+    quiet_hours_start = Column("quietHoursStart", String)  # HH:MM format
+    quiet_hours_end = Column("quietHoursEnd", String)      # HH:MM format
+    
+    created_at = Column("createdAt", DateTime, default=func.now())
+    updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="notification_settings")
+
+class AlertTemplate(Base):
+    __tablename__ = "alert_templates"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column("userId", String, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)  # User-friendly name
+    symbol = Column(String, nullable=False)
+    exchange = Column(String, nullable=False)
+    condition = Column(String, nullable=False)  # JSON condition for Redis processing
+    message = Column(String)  # Custom alert message
+    is_active = Column("isActive", Boolean, default=True)
+    created_at = Column("createdAt", DateTime, default=func.now())
+    updated_at = Column("updatedAt", DateTime, default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="alert_templates") 
