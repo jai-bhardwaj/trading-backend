@@ -1,3 +1,9 @@
+# =================================================================
+# TRADING BACKEND - GITIGNORE
+# =================================================================
+# Comprehensive .gitignore for production trading engine
+# Covers Python, trading data, logs, security files, and deployment artifacts
+
 # Environment and secrets
 .env
 .env.local
