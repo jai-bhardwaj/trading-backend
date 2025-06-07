@@ -294,7 +294,7 @@ class OrderExecutor:
                 
                 # Submit order to broker
                 result.status = ExecutionStatus.SUBMITTED_TO_BROKER
-                await self._update_order_status(db, order, OrderStatus.SUBMITTED, "Order submitted to broker")
+                await self._update_order_status(db, order, OrderStatus.QUEUED, "Order submitted to broker")
                 
                 # Execute order
                 broker_result = await asyncio.wait_for(
@@ -551,7 +551,7 @@ class OrderExecutor:
                     result.status = ExecutionStatus.FAILED
                     return result
                 
-                if order.status not in [OrderStatus.PENDING, OrderStatus.PLACED, OrderStatus.SUBMITTED]:
+                if order.status not in [OrderStatus.PENDING, OrderStatus.PLACED, OrderStatus.QUEUED]:
                     result.message = f"Order {order_id} cannot be cancelled (status: {order.status})"
                     result.status = ExecutionStatus.FAILED
                     return result

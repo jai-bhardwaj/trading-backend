@@ -1,15 +1,6 @@
 """
-Base models for the pure Redis service
+Base models for the trading engine database
 """
-
-from enum import Enum
-
-class BrokerName(Enum):
-    ANGEL_ONE = "ANGEL_ONE"
-    
-class TimeFrame(Enum):
-    SECOND_1 = "1s"
-    MINUTE_1 = "1m"
 
 from sqlalchemy import (
     Boolean,
@@ -64,7 +55,6 @@ class StrategyStatus(enum.Enum):
     PAUSED = "PAUSED"
     STOPPED = "STOPPED"
     ERROR = "ERROR"
-    BACKTESTING = "BACKTESTING"
 
 class AssetClass(enum.Enum):
     EQUITY = "EQUITY"
@@ -146,6 +136,25 @@ class AuditAction(enum.Enum):
     PASSWORD_CHANGED = "PASSWORD_CHANGED"
     API_KEY_CREATED = "API_KEY_CREATED"
     API_KEY_DELETED = "API_KEY_DELETED"
+
+class StrategyConfigStatus(enum.Enum):
+    ACTIVE = "ACTIVE"
+    STOPPED = "STOPPED"
+    ERROR = "ERROR"
+    PAUSED = "PAUSED"
+
+class StrategyCommandType(enum.Enum):
+    START = "START"
+    STOP = "STOP"
+    RESTART = "RESTART"
+    PAUSE = "PAUSE"
+    RESUME = "RESUME"
+    UPDATE_CONFIG = "UPDATE_CONFIG"
+
+class CommandStatus(enum.Enum):
+    PENDING = "PENDING"
+    EXECUTED = "EXECUTED"
+    FAILED = "FAILED"
 
 # Models matching Prisma schema exactly with camelCase column names
 class User(Base):
@@ -327,38 +336,8 @@ class Strategy(Base):
     # Relations
     user = relationship("User", back_populates="strategies")
     orders = relationship("Order", back_populates="strategy", cascade="all, delete-orphan")
-    backtests = relationship("Backtest", back_populates="strategy", cascade="all, delete-orphan")
     strategy_logs = relationship("StrategyLog", back_populates="strategy", cascade="all, delete-orphan")
     strategy_configs = relationship("StrategyConfig", back_populates="strategy", cascade="all, delete-orphan")
-
-class Backtest(Base):
-    __tablename__ = "backtests"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    strategy_id = Column("strategyId", String, ForeignKey("strategies.id"), nullable=False)
-    name = Column(String, nullable=False)
-    start_date = Column("startDate", DateTime, nullable=False)
-    end_date = Column("endDate", DateTime, nullable=False)
-    initial_capital = Column("initialCapital", Float, nullable=False)
-    
-    # Results
-    final_capital = Column("finalCapital", Float, nullable=False)
-    total_return = Column("totalReturn", Float, nullable=False)
-    annual_return = Column("annualReturn", Float, nullable=False)
-    sharpe_ratio = Column("sharpeRatio", Float, nullable=False)
-    max_drawdown = Column("maxDrawdown", Float, nullable=False)
-    total_trades = Column("totalTrades", Integer, nullable=False)
-    win_rate = Column("winRate", Float, nullable=False)
-    
-    # Detailed Results (JSON)
-    trades = Column(JSON)
-    metrics = Column(JSON)
-    
-    status = Column(String, default="RUNNING")
-    created_at = Column("createdAt", DateTime, default=func.now())
-    completed_at = Column("completedAt", DateTime)
-
-    strategy = relationship("Strategy", back_populates="backtests")
 
 class StrategyLog(Base):
     __tablename__ = "strategy_logs"

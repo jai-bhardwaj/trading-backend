@@ -15,13 +15,16 @@ from SmartApi import SmartConnect
 from app.brokers.base import (
     BrokerInterface, BrokerOrder, BrokerPosition, BrokerBalance, BrokerTrade, MarketData,
     register_broker, AuthenticationError, OrderError, SymbolNotFoundError,
-    InsufficientFundsError, RateLimitError
+    InsufficientFundsError, RateLimitError, MarketClosedError, InvalidOrderParametersError,
+    BrokerConnectionError, OrderTimeoutError
 )
 from app.models.base import BrokerName, OrderSide, OrderType, ProductType, OrderStatus
 from app.brokers.mapping_utils import (
     map_order_to_angelone, map_angelone_order_status, map_angelone_positions,
     map_angelone_balance, map_angelone_trade_history, fetch_symbol_token
 )
+from app.core.rate_limiter import check_broker_rate_limit, RateLimitType
+from app.core.circuit_breaker import get_broker_circuit_breaker, CircuitBreakerOpenException
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +141,7 @@ class AngelOneBroker(BrokerInterface):
     
     async def _run_api_call(self, method_name: str, *args, **kwargs) -> Any:
         """
-        Execute Angel One API call safely in thread pool
+        Execute Angel One API call safely in thread pool with rate limiting and circuit breaker
         
         Args:
             method_name: Name of the SmartAPI method to call
@@ -151,7 +154,27 @@ class AngelOneBroker(BrokerInterface):
         Raises:
             Various broker exceptions based on API response
         """
+        # Check rate limit before making API call
+        rate_limit_result = await check_broker_rate_limit("ANGEL_ONE")
+        if not rate_limit_result.allowed:
+            raise RateLimitError(
+                f"Angel One API rate limit exceeded. Retry after {rate_limit_result.retry_after} seconds",
+                error_code="RATE_LIMIT_EXCEEDED"
+            )
+        
         await self._ensure_authenticated()
+        
+        # Use circuit breaker for fault tolerance
+        circuit_breaker = get_broker_circuit_breaker()
+        
+        try:
+            return await circuit_breaker.call(self._execute_api_call, method_name, *args, **kwargs)
+        except CircuitBreakerOpenException as e:
+            self.logger.error(f"🔌 CIRCUIT BREAKER OPEN: Angel One API calls are currently blocked due to repeated failures")
+            raise BrokerConnectionError(f"Angel One service temporarily unavailable: {e}")
+    
+    async def _execute_api_call(self, method_name: str, *args, **kwargs) -> Any:
+        """Execute the actual API call - used by circuit breaker."""
         
         if not hasattr(self._smart_api, method_name):
             raise AttributeError(f"SmartConnect has no method '{method_name}'")
@@ -195,7 +218,7 @@ class AngelOneBroker(BrokerInterface):
                         raise RateLimitError(f"Angel One API Error ({error_code}): {error_message}")
                     elif "market" in error_message.lower() and "closed" in error_message.lower():
                         self.logger.error(f"🏪 MARKET CLOSED ERROR: Trading not allowed during market closure")
-                        raise OrderError(f"Angel One API Error ({error_code}): {error_message}")
+                        raise MarketClosedError(f"Angel One API Error ({error_code}): {error_message}")
                     elif "order" in error_message.lower() and ("rejected" in error_message.lower() or "failed" in error_message.lower()):
                         self.logger.error(f"❌ ORDER REJECTION ERROR: Order validation failed")
                         raise OrderError(f"Angel One API Error ({error_code}): {error_message}")

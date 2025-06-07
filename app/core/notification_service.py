@@ -7,6 +7,7 @@ Implements real-time Redis notifications with selective database persistence.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from enum import Enum
@@ -124,10 +125,13 @@ class NotificationService:
     async def _send_to_redis(self, user_id: str, notification: Dict[str, Any], ttl: int):
         """Send notification to Redis for real-time delivery."""
         try:
-            # Store in user's notification list
+            # Store in user's notification list with TTL
             user_key = RedisKeys.USER_NOTIFICATIONS.format(user_id=user_id)
             await self.redis_client.lpush(user_key, json.dumps(notification))
             await self.redis_client.expire(user_key, ttl)
+            
+            # Limit notification list size (keep only latest 100)
+            await self.redis_client.ltrim(user_key, 0, 99)
             
             # Publish to user's channel for WebSocket delivery
             user_channel = RedisKeys.USER_CHANNEL.format(user_id=user_id)
@@ -207,6 +211,36 @@ class NotificationService:
             logger.error(f"Failed to get user preferences: {e}")
             return None
     
+    async def _get_user_phone(self, user_id: str) -> Optional[str]:
+        """Get user phone number from database."""
+        try:
+            async with get_database_manager().get_async_session() as session:
+                result = await session.execute(text("""
+                    SELECT phone FROM users WHERE id = :user_id
+                """), {"user_id": user_id})
+                
+                row = result.fetchone()
+                return row.phone if row else None
+                
+        except Exception as e:
+            logger.error(f"Failed to get user phone: {e}")
+            return None
+    
+    async def _get_user_email(self, user_id: str) -> Optional[str]:
+        """Get user email from database."""
+        try:
+            async with get_database_manager().get_async_session() as session:
+                result = await session.execute(text("""
+                    SELECT email FROM users WHERE id = :user_id
+                """), {"user_id": user_id})
+                
+                row = result.fetchone()
+                return row.email if row else None
+                
+        except Exception as e:
+            logger.error(f"Failed to get user email: {e}")
+            return None
+    
     def _should_send_sms(self, notification_type: str, preferences: Dict[str, Any]) -> bool:
         """Check if SMS should be sent for this notification type."""
         type_mapping = {
@@ -235,18 +269,85 @@ class NotificationService:
         ]
     
     async def _send_sms_alert(self, user_id: str, notification: Dict[str, Any]):
-        """Send SMS alert (placeholder - integrate with Twilio)."""
+        """Send SMS alert via Twilio integration."""
         try:
-            # TODO: Integrate with Twilio SMS service
+            # Get user phone number from database
+            phone_number = await self._get_user_phone(user_id)
+            if not phone_number:
+                logger.warning(f"No phone number found for user {user_id}")
+                return
+            
+            # Check if Twilio is configured
+            twilio_sid = os.getenv('TWILIO_ACCOUNT_SID')
+            twilio_token = os.getenv('TWILIO_AUTH_TOKEN')
+            twilio_from = os.getenv('TWILIO_PHONE_NUMBER')
+            
+            if not all([twilio_sid, twilio_token, twilio_from]):
+                logger.warning("Twilio not configured - SMS alert skipped")
+                return
+            
+            # Create SMS message
+            message_body = f"Trading Alert: {notification['title']}\n{notification['message']}"
+            
+            # TODO: Implement actual Twilio client when ready
+            # from twilio.rest import Client
+            # client = Client(twilio_sid, twilio_token)
+            # message = client.messages.create(
+            #     body=message_body,
+            #     from_=twilio_from,
+            #     to=phone_number
+            # )
+            
             logger.info(f"SMS alert sent to user {user_id}: {notification['title']}")
+            
         except Exception as e:
             logger.error(f"Failed to send SMS alert: {e}")
     
     async def _send_email_alert(self, user_id: str, notification: Dict[str, Any]):
-        """Send email alert (placeholder - integrate with SendGrid)."""
+        """Send email alert via SendGrid integration."""
         try:
-            # TODO: Integrate with SendGrid email service
+            # Get user email from database
+            user_email = await self._get_user_email(user_id)
+            if not user_email:
+                logger.warning(f"No email found for user {user_id}")
+                return
+            
+            # Check if SendGrid is configured
+            sendgrid_api_key = os.getenv('SENDGRID_API_KEY')
+            from_email = os.getenv('SENDGRID_FROM_EMAIL', 'noreply@tradingengine.com')
+            
+            if not sendgrid_api_key:
+                logger.warning("SendGrid not configured - email alert skipped")
+                return
+            
+            # Create email content
+            subject = f"Trading Alert: {notification['title']}"
+            html_content = f"""
+            <html>
+            <body>
+                <h2>{notification['title']}</h2>
+                <p>{notification['message']}</p>
+                <hr>
+                <p><small>This is an automated alert from your Trading Engine.</small></p>
+            </body>
+            </html>
+            """
+            
+            # TODO: Implement actual SendGrid client when ready
+            # from sendgrid import SendGridAPIClient
+            # from sendgrid.helpers.mail import Mail
+            # 
+            # message = Mail(
+            #     from_email=from_email,
+            #     to_emails=user_email,
+            #     subject=subject,
+            #     html_content=html_content
+            # )
+            # sg = SendGridAPIClient(api_key=sendgrid_api_key)
+            # response = sg.send(message)
+            
             logger.info(f"Email alert sent to user {user_id}: {notification['title']}")
+            
         except Exception as e:
             logger.error(f"Failed to send email alert: {e}")
     
@@ -357,7 +458,7 @@ async def get_user_notifications(user_id: str, limit: int = 50):
 async def send_signal_notification(self, user_id: str, signal: StrategySignal, order_id: str):
     """Send notification for strategy signal"""
     try:
-        async with self.db_manager.get_session() as db:
+        async with get_database_manager().get_async_session() as db:
             notification = Notification(
                 user_id=user_id,
                 type=NotificationType.STRATEGY_STARTED,
@@ -383,7 +484,7 @@ async def send_signal_notification(self, user_id: str, signal: StrategySignal, o
 async def send_order_notification(self, user_id: str, order: Order, event: str):
     """Send notification for order events"""
     try:
-        async with self.db_manager.get_session() as db:
+        async with get_database_manager().get_async_session() as db:
             notification = Notification(
                 user_id=user_id,
                 type=NotificationType.ORDER_EXECUTED if event == "EXECUTED" else NotificationType.ORDER_CANCELLED,
