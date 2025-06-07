@@ -59,7 +59,7 @@ async def fix_enum_types(db):
         },
         {
             'name': 'StrategyStatus',
-            'values': ['DRAFT', 'ACTIVE', 'PAUSED', 'STOPPED', 'ERROR', 'BACKTESTING']
+            'values': ['DRAFT', 'ACTIVE', 'PAUSED', 'STOPPED', 'ERROR']
         },
         {
             'name': 'AssetClass',

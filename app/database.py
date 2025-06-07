@@ -7,7 +7,13 @@ import logging
 import redis.asyncio as redis
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, Optional, Any
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+try:
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+except ImportError:
+    # Fallback for older SQLAlchemy versions
+    from sqlalchemy.orm import sessionmaker
+    async_sessionmaker = sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import text, event

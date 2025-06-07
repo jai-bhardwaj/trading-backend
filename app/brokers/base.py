@@ -155,23 +155,43 @@ class BrokerError(Exception):
         super().__init__(self.message)
 
 class AuthenticationError(BrokerError):
-    """Authentication failed with broker"""
+    """Raised when broker authentication fails"""
     pass
 
 class OrderError(BrokerError):
-    """Order placement/modification failed"""
+    """Base class for order-related errors"""
     pass
 
-class InsufficientFundsError(BrokerError):
-    """Insufficient funds for order"""
+class InsufficientFundsError(OrderError):
+    """Raised when account has insufficient funds for order"""
     pass
 
-class SymbolNotFoundError(BrokerError):
-    """Symbol not found or not tradeable"""
+class SymbolNotFoundError(OrderError):
+    """Raised when trading symbol is not found or invalid"""
     pass
 
 class RateLimitError(BrokerError):
-    """API rate limit exceeded"""
+    """Raised when API rate limit is exceeded"""
+    pass
+
+class MarketClosedError(OrderError):
+    """Raised when attempting to trade during market closure"""
+    pass
+
+class InvalidOrderParametersError(OrderError):
+    """Raised when order parameters are invalid"""
+    pass
+
+class BrokerConnectionError(BrokerError):
+    """Raised when broker connection fails"""
+    pass
+
+class OrderTimeoutError(OrderError):
+    """Raised when order execution times out"""
+    pass
+
+class PositionNotFoundError(BrokerError):
+    """Raised when requested position is not found"""
     pass
 
 class BrokerInterface(ABC):

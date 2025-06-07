@@ -22,8 +22,8 @@ class DatabaseConfig(BaseModel):
     )
     
     # Connection pool settings optimized for managed database
-    pool_size: int = Field(default=20, ge=5, le=100)
-    max_overflow: int = Field(default=30, ge=10, le=200)
+    pool_size: int = Field(default=10, ge=5, le=50)  # Reduced for DigitalOcean managed DB
+    max_overflow: int = Field(default=15, ge=5, le=100)  # Reduced for better performance
     pool_pre_ping: bool = Field(default=True, description="Enable connection health checks")
     pool_recycle: int = Field(default=3600, description="Connection recycle time (seconds)")
     echo: bool = Field(default=False, description="Enable SQL query logging")
@@ -255,6 +255,20 @@ class AppSettings(BaseSettings):
         if v.lower() not in allowed_envs:
             raise ValueError(f"Environment must be one of: {allowed_envs}")
         return v.lower()
+    
+    @model_validator(mode='after')
+    def validate_security_settings(self):
+        """Validate security settings for production environment"""
+        if self.environment == 'production':
+            if self.debug:
+                raise ValueError("Debug mode cannot be enabled in production environment")
+            if hasattr(self, 'api') and self.api.debug:
+                raise ValueError("API debug mode cannot be enabled in production environment")
+            if hasattr(self, 'security') and self.security.secret_key == "dev-secret-key-change-in-production":
+                raise ValueError("Default secret key cannot be used in production")
+            if hasattr(self, 'security') and len(self.security.secret_key) < 32:
+                raise ValueError("Secret key must be at least 32 characters in production")
+        return self
     
     def is_production(self) -> bool:
         """Check if running in production"""

@@ -9,12 +9,16 @@ for live trading with the engine.
 import asyncio
 import logging
 import os
+from passlib.context import CryptContext
 from app.database import get_database_manager
 from app.models.base import BrokerConfig, BrokerName, User
 from sqlalchemy import select
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 async def check_broker_config():
     """Check if Angel One broker configuration exists"""
@@ -63,16 +67,22 @@ async def create_broker_config():
         
         if not user:
             logger.info("📝 Creating default user...")
+            # Generate a secure random password for default user
+            import secrets
+            import string
+            default_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+            
             user = User(
                 username="default",
                 email="default@tradingengine.com",
-                password_hash="default_hash",  # In production, use proper hashing
+                hashed_password=pwd_context.hash(default_password),  # Proper password hashing
                 is_active=True
             )
             session.add(user)
             await session.commit()
             await session.refresh(user)
             logger.info(f"✅ Created default user with ID: {user.id}")
+            logger.warning(f"🔐 Default user password: {default_password} (Please save this securely!)")
         
         # Create broker configuration
         broker_config = BrokerConfig(
@@ -80,8 +90,8 @@ async def create_broker_config():
             broker_name=BrokerName.ANGEL_ONE,
             api_key=api_key,
             client_id=client_id,
-            password=password,
-            totp_secret=totp_secret,
+            password=password,  # TODO: Encrypt this before storing
+            totp_secret=totp_secret,  # TODO: Encrypt this before storing
             is_active=True
         )
         
@@ -92,6 +102,7 @@ async def create_broker_config():
         logger.info("✅ Angel One broker configuration created successfully!")
         logger.info(f"   Config ID: {broker_config.id}")
         logger.info(f"   Client ID: {broker_config.client_id}")
+        logger.warning("⚠️  Broker credentials stored in plain text - implement encryption for production!")
         
         return broker_config
 
