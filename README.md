@@ -509,32 +509,216 @@ class MyCustomStrategy(BaseStrategy):
         pass
 ```
 
-## 🚀 Production Deployment
+## 🚀 Production Deployment with PM2
 
-### Docker Deployment
+### 🎯 Quick Production Setup
 
 ```bash
-# Build image
-docker build -t trading-engine .
+# 1. Run automated production deployment
+sudo ./deploy_production.sh
 
-# Run container
-docker run -p 8000:8000 --env-file .env trading-engine
+# 2. Setup comprehensive monitoring
+sudo ./monitoring_setup.sh
+
+# 3. Configure your environment
+sudo nano /root/trading-backend/.env.production
 ```
 
-### PM2 Deployment
+### 📋 Manual DigitalOcean Setup
+
+For step-by-step production deployment:
 
 ```bash
-# Install PM2
-npm install -g pm2
+# 1. Create DigitalOcean droplet (Ubuntu 22.04 LTS, 4GB+ RAM recommended)
 
-# Start application
-pm2 start ecosystem.config.js
+# 2. Install dependencies
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-pip python3-venv git postgresql-client redis-tools curl
 
-# Monitor
+# 3. Clone and setup application
+git clone <your-repo> /root/trading-backend
+cd /root/trading-backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 4. Install Node.js and PM2
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g pm2
+
+# 5. Setup directories and permissions
+sudo mkdir -p /root/trading-backend/logs
+sudo chown -R root:root /root/trading-backend
+sudo chmod +x /root/trading-backend/main.py
+
+# 6. Configure environment
+sudo cp .env.example .env.production
+# Edit with your production values:
+sudo nano .env.production
+
+# 7. Setup database
+python setup_database.py
+
+# 8. Deploy with PM2
+pm2 start ecosystem.config.js --env production
+pm2 save
+pm2 startup systemd
+```
+
+### ⚙️ PM2 Configuration (ecosystem.config.js)
+
+Your `ecosystem.config.js` includes:
+
+- **Trading Engine**: Core engine with 4 workers
+- **Trading API**: FastAPI with 2 cluster instances  
+- **Strategy Monitor**: Background monitoring
+- **Auto-restart**: On failures with exponential backoff
+- **Log management**: Centralized logging with rotation
+- **Environment management**: Production vs development configs
+
+### 📊 Production Monitoring Stack
+
+#### Option 1: Built-in PM2 Monitoring
+
+```bash
+# Real-time monitoring dashboard
 pm2 monit
 
+# Process status
+pm2 status
+
 # View logs
-pm2 logs trading-engine
+pm2 logs
+pm2 logs trading-engine --lines 100
+
+# Performance monitoring
+pm2 logs --timestamp
+```
+
+#### Option 2: PM2 Plus (Recommended GUI)
+
+**Best for production trading systems:**
+
+```bash
+# 1. Sign up at https://app.pm2.io (free tier available)
+# 2. Create a server bucket
+# 3. Link your server
+pm2 link <secret_key> <public_key>
+
+# Features:
+# ✅ Real-time performance metrics
+# ✅ Error tracking and notifications
+# ✅ Custom alerts for trading events
+# ✅ Historical data and reports
+# ✅ Mobile app for monitoring on-the-go
+```
+
+#### Option 3: Comprehensive Monitoring (Full Stack)
+
+Run the monitoring setup script for enterprise-level monitoring:
+
+```bash
+sudo ./monitoring_setup.sh
+```
+
+**Includes:**
+- **📊 Grafana Dashboard** (http://localhost:3000) - Trading metrics, charts, alerts
+- **🔍 Prometheus** (http://localhost:9090) - Metrics collection and alerting  
+- **📈 Netdata** (http://localhost:19999) - Real-time system monitoring
+- **🐳 Portainer** (http://localhost:9000) - Docker container management
+- **📝 Loki + Promtail** - Centralized log management
+- **⚡ Redis Exporter** - Redis performance metrics
+- **🗃️ PostgreSQL Exporter** - Database performance metrics
+
+### 🔧 PM2 Production Commands
+
+```bash
+# 🚀 Deployment
+pm2 start ecosystem.config.js --env production  # Start all services
+pm2 reload all                                   # Zero-downtime reload
+pm2 restart all                                  # Full restart
+
+# 📊 Monitoring  
+pm2 status                                       # Process overview
+pm2 monit                                        # Real-time dashboard
+pm2 logs                                         # Live logs
+pm2 logs trading-engine --lines 50              # Specific service logs
+
+# 🔧 Management
+pm2 stop all                                     # Stop all processes
+pm2 delete all                                   # Remove all processes  
+pm2 save                                         # Save current state
+pm2 resurrect                                    # Restore saved state
+
+# 📈 Performance
+pm2 show trading-engine                          # Detailed process info
+pm2 reset trading-engine                         # Reset counters
+pm2 flush                                        # Flush logs
+```
+
+### 🔒 Security & SSL Setup
+
+```bash
+# 1. Setup Nginx reverse proxy (included in deploy script)
+sudo nano /etc/nginx/sites-available/trading-backend
+
+# 2. Install SSL certificate with Let's Encrypt
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+
+# 3. Auto-renewal
+sudo certbot renew --dry-run
+```
+
+### 📊 Health Monitoring URLs
+
+After running the monitoring setup:
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| **Grafana** | http://localhost:3000 | Trading dashboards, alerts |
+| **PM2 Plus** | https://app.pm2.io | Process monitoring, mobile alerts |
+| **Netdata** | http://localhost:19999 | Real-time system metrics |
+| **Portainer** | http://localhost:9000 | Docker management |
+| **Prometheus** | http://localhost:9090 | Metrics collection |
+
+**Default Grafana Login:**
+- Username: `admin`
+- Password: `admin123`
+
+### 🚨 Production Alerts
+
+Configured alerts for:
+- ❌ Trading engine downtime
+- 📈 High order failure rates  
+- 🔗 Database connection errors
+- 💾 High memory usage
+- 📊 Queue overload
+- ⚡ Redis connection issues
+
+### 📱 Mobile Monitoring
+
+**PM2 Plus Mobile App:**
+- Real-time notifications
+- Process management
+- Performance charts
+- Error tracking
+- Works with iOS/Android
+
+### 🔄 Auto-Deployment Pipeline
+
+```bash
+# Setup Git deployment hooks
+cd /opt/monitoring
+pm2 ecosystem deploy production setup
+pm2 ecosystem deploy production
+
+# Features:
+# ✅ Git-based deployments
+# ✅ Automated dependency installation
+# ✅ Zero-downtime updates
+# ✅ Rollback capabilities
 ```
 
 ### Environment Variables for Production
