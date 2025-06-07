@@ -2,11 +2,15 @@
 .env
 .env.local
 .env.production
+.env.staging
+.env.development
 
 # Logs
 logs/
 *.log
 trading_engine.pid
+*.out
+*.err
 
 # PM2
 .pm2/
@@ -14,6 +18,7 @@ pids/
 *.pid
 *.seed
 *.pid.lock
+ecosystem.config.js.backup
 
 # Python
 __pycache__/
@@ -31,6 +36,8 @@ htmlcov/
 *.egg-info/
 build/
 dist/
+.tox/
+.nox/
 
 # Node.js (for PM2)
 node_modules/
@@ -41,16 +48,21 @@ yarn-error.log*
 # Database
 *.db
 *.sqlite3
+database.url
+*.backup.sql
+*.dump
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+.vscode/settings.json
 
 # OS
 .DS_Store
 Thumbs.db
+.directory
 
 # Backup files
 backup_*/
@@ -69,8 +81,14 @@ deployment/
 *.pid
 core.*
 
-# Data
+# Data and Trading Files
 data/
+market_data/
+backtest_results/
+trade_history/
+*.csv
+*.xlsx
+*.json.bak
 
 # Documentation artifacts
 site/
@@ -78,5 +96,103 @@ docs/_build/
 
 # Cache and temporary files
 .cache/
-.tox/
-.nox/
+.pytest_cache/
+
+# Security and Keys
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+keys/
+certificates/
+secrets/
+
+# Trading Engine Specific
+instrument_cache/
+price_data/
+order_cache/
+*.pickle
+*.pkl
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Local development tools
+.python-version
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+.idea_modules/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+test_results/
+coverage_html_report/
+
+# Package files
+*.egg
+*.wheel
+
+# System files
+*.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Configuration backups
+config.backup.*
+settings.backup.*
+
+# Lock files (keep requirements.txt but ignore lock files)
+Pipfile.lock
+poetry.lock
+
+# Terraform (if used for infrastructure)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Docker (if used)
+.dockerignore.backup
+docker-compose.override.yml
+
+# SSL/TLS certificates
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+ssl/
+
+# Local scripts and utilities
+local_scripts/
+utils/local_*
+scripts/local_*
+
+# Performance profiling
+*.prof
+*.pstats
+prof/
+
+# Monitoring and metrics
+metrics/
+monitoring/local_*
