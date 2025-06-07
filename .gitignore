@@ -199,6 +199,61 @@ scripts/local_*
 *.pstats
 prof/
 
+# =================================================================
+# MONITORING AND OBSERVABILITY
+# =================================================================
+
+# Docker Compose monitoring stack - ignore runtime data but keep essential files
+# (Note: using specific patterns instead of blanket monitoring/ exclusion)
+
+# Grafana data and configuration
+monitoring/grafana/
+monitoring/config/grafana/
+monitoring/config/datasources/
+monitoring/config/dashboards/
+grafana_data/
+
+# Prometheus data and configuration
+monitoring/prometheus/
+prometheus_data/
+
+# Docker volumes and runtime data
+*_data/
+docker-compose.override.yml
+
+# Monitoring logs
+monitoring/logs/
+monitoring/*.log
+
+# Container runtime files
+.dockerenv
+docker-compose.*.yml.backup
+
+# Monitoring credentials and configs (keep templates)
+monitoring/config/*.ini
+monitoring/config/*.yml
+!monitoring/config/*.template
+!monitoring/config/*.example
+
+# Grafana plugins and temp files
+monitoring/grafana/plugins/
+monitoring/grafana/data/
+monitoring/grafana/logs/
+
+# Alert manager data
+alertmanager_data/
+
+# Node exporter textfile collector
+node_exporter/
+
+# Container monitoring cache
+cadvisor_cache/
+
+# Monitoring shell history and temp files
+monitoring/.bash_history
+monitoring/*.tmp
+monitoring/*.temp
+
 # Monitoring and metrics
 metrics/
 monitoring/local_*
