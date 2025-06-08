@@ -143,16 +143,22 @@ def map_order_to_angelone(order: Order, smartapi_instance=None) -> dict[str, any
         "IOC": "IOC",  # Immediate or Cancel
     }
 
+    # Convert enum values to strings
+    side_str = order.side.value if hasattr(order.side, 'value') else str(order.side)
+    order_type_str = order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type)
+    product_type_str = order.product_type.value if hasattr(order.product_type, 'value') else str(order.product_type)
+    variety_str = getattr(order, 'variety', 'NORMAL')
+    if hasattr(variety_str, 'value'):
+        variety_str = variety_str.value
+
     params = {
-        "variety": variety_map.get(
-            order.variety, "NORMAL"
-        ),  # Default to NORMAL if not specified or map based on order_type/product_type
+        "variety": variety_map.get(variety_str, "NORMAL"),
         "tradingsymbol": order.symbol,  # e.g., "SBIN-EQ" or "NIFTY25MAY2518500CE"
         "symboltoken": "",  # Will be fetched below
-        "transactiontype": transaction_type_map.get(order.side),
+        "transactiontype": transaction_type_map.get(side_str),
         "exchange": order.exchange,  # e.g., "NSE", "NFO", "MCX"
-        "ordertype": order_type_map.get(order.order_type),
-        "producttype": product_type_map.get(order.product_type),
+        "ordertype": order_type_map.get(order_type_str),
+        "producttype": product_type_map.get(product_type_str),
         "duration": "DAY",  # Defaulting to DAY, make configurable if needed
         "quantity": str(order.quantity),  # API expects string quantity
         "price": "0",  # Default for MARKET, SL-M
@@ -160,17 +166,17 @@ def map_order_to_angelone(order: Order, smartapi_instance=None) -> dict[str, any
     }
 
     # Add price and trigger price based on order type
-    if order.order_type == "LIMIT":
-        if order.price is None:
-            raise ValueError("Price needed for LIMIT order")
+    if order_type_str == "LIMIT":
+        if order.price is None or order.price <= 0:
+            raise ValueError("Price is required for limit orders")
         params["price"] = str(order.price)
-    elif order.order_type == "SL":
+    elif order_type_str == "SL":
         if order.price is None or order.trigger_price is None:
             raise ValueError("Price and Trigger Price needed for SL order")
         params["price"] = str(order.price)
         params["triggerprice"] = str(order.trigger_price)
         # params["variety"] = variety_map["STOPLOSS"] # Does variety need setting for SL? Check docs.
-    elif order.order_type == "SL-M":
+    elif order_type_str == "SL-M":
         if order.trigger_price is None:
             raise ValueError("Trigger Price needed for SL-M order")
         params["triggerprice"] = str(order.trigger_price)
@@ -198,14 +204,17 @@ def map_order_to_angelone(order: Order, smartapi_instance=None) -> dict[str, any
         or not params["producttype"]
     ):
         raise ValueError(
-            f"Order mapping failed for side={order.side}, order_type={order.order_type}, product_type={order.product_type}"
+            f"Order mapping failed for side={side_str}, order_type={order_type_str}, product_type={product_type_str}"
         )
 
     return params
 
 
-def map_angelone_positions(api_positions_data: list[dict[str, any]]) -> list[Position]:
+def map_angelone_positions(api_positions_data: list[dict[str, any]]) -> list:
     """Maps Angel One position book data to internal Position list."""
+    from app.brokers.base import BrokerPosition
+    from app.models.base import ProductType
+    
     positions = []
     if not api_positions_data:
         return positions
@@ -218,19 +227,15 @@ def map_angelone_positions(api_positions_data: list[dict[str, any]]) -> list[Pos
             if qty == 0:
                 continue  # Skip zero positions
 
-            pos = Position(
-                symbol=p.get("tradingsymbol"),
-                exchange=p.get("exchange"),
-                product_type=p.get("producttype"),  # Verify mapping if needed
+            pos = BrokerPosition(
+                symbol=p.get("tradingsymbol", ""),
+                exchange=p.get("exchange", ""),
+                product_type=ProductType.INTRADAY,  # Default, you can map this properly
                 quantity=qty,
-                average_price=float(
-                    p.get("netavgprice", 0.0)
-                ),  # Or buyavgprice/sellavgprice? Use netavgprice if available.
+                average_price=float(p.get("netavgprice", 0.0)),
                 last_traded_price=float(p.get("ltp", 0.0)),
-                pnl=float(
-                    p.get("unrealised", 0.0)
-                ),  # Or 'realised'? check PnL field names
-                # Add other relevant fields from Angel One position data
+                pnl=float(p.get("unrealised", 0.0)),
+                market_value=float(p.get("netavgprice", 0.0)) * qty
             )
             positions.append(pos)
         except (ValueError, TypeError, KeyError) as e:
@@ -241,29 +246,28 @@ def map_angelone_positions(api_positions_data: list[dict[str, any]]) -> list[Pos
     return positions
 
 
-def map_angelone_balance(api_profile_data: dict[str, any]) -> Balance:
+def map_angelone_balance(api_profile_data: dict[str, any]):
     """Maps Angel One profile/RMS data to internal Balance object."""
+    from app.brokers.base import BrokerBalance
+    
     if not api_profile_data:
         raise ValueError("Received empty profile data from Angel One")
 
     try:
         # ** Mapping based on observed Angel One profile/RMS keys - VERIFY! **
-        # Find balance details which might be nested under 'rms' or similar key
-        rms_data = (
-            api_profile_data  # Or api_profile_data.get('rms') depending on structure
-        )
-        balance = Balance(
-            # Map available cash (check fields like 'availablecash', 'amount', 'balance')
-            available_cash=float(rms_data.get("availablecash", 0.0)),
-            # Map margin used (check fields like 'marginused', 'utiliseddebits')
-            margin_used=float(
-                rms_data.get("utilisedmargin", 0.0)
-            ),  # Check correct field
-            # Map total balance/equity (check fields like 'net', 'equity', 'collateral')
-            total_balance=float(
-                rms_data.get("net", 0.0)
-            ),  # Check correct field for overall balance/equity
-            # Map other relevant fields like collateral, exposure limits etc.
+        rms_data = api_profile_data
+        
+        available_cash = float(rms_data.get("availablecash", 0.0))
+        net_balance = float(rms_data.get("net", 0.0))
+        
+        balance = BrokerBalance(
+            available_cash=available_cash,
+            used_margin=float(rms_data.get("utiliseddebits", 0.0)),
+            total_balance=net_balance,
+            buying_power=available_cash,  # Use available cash as buying power
+            portfolio_value=net_balance,
+            total_pnl=0.0,  # Not provided in this API
+            day_pnl=0.0  # Not provided in this API
         )
         return balance
     except (ValueError, TypeError, KeyError) as e:

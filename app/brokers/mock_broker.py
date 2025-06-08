@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.core.interfaces import Balance, BrokerInterface, Order, Position
+from app.utils.timezone_utils import IST  # IST replacement for timezone.utc
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class MockBroker(BrokerInterface):
 
         # Assign an internal ID and timestamp
         order.internal_order_id = f"mock_{uuid.uuid4()}"
-        order.order_timestamp = datetime.datetime.now(datetime.timezone.utc)
+        order.order_timestamp = datetime.datetime.now(IST)
         order.last_update_timestamp = order.order_timestamp
         order.status = "ACCEPTED"  # Simulate immediate acceptance
 
@@ -165,9 +166,7 @@ class MockBroker(BrokerInterface):
                 # For simplicity, we'll just not fill it in this run. A real sim needs state tracking.
                 # Let's change status to OPEN to indicate it wasn't filled yet.
                 order.status = "OPEN"
-                order.last_update_timestamp = datetime.datetime.now(
-                    datetime.timezone.utc
-                )
+                order.last_update_timestamp = datetime.datetime.now(IST)
                 return
         # Add SL/SL-M simulation if needed (check trigger price against simulated_market_price)
         else:  # SL, SL-M etc. - Just use simulated price for now
@@ -177,7 +176,7 @@ class MockBroker(BrokerInterface):
         order.status = "COMPLETE"
         order.filled_quantity = fill_qty
         order.average_price = fill_price
-        order.last_update_timestamp = datetime.datetime.now(datetime.timezone.utc)
+        order.last_update_timestamp = datetime.datetime.now(IST)
         order.broker_order_id = order.internal_order_id  # For mock, they are the same
 
         logger.info(
@@ -291,9 +290,7 @@ class MockBroker(BrokerInterface):
                 "PENDING",
             ]:  # Add more cancellable states if needed
                 order.status = "CANCELLED"
-                order.last_update_timestamp = datetime.datetime.now(
-                    datetime.timezone.utc
-                )
+                order.last_update_timestamp = datetime.datetime.now(IST)
                 logger.info(f"MockBroker: Order {internal_order_id} cancelled.")
                 return {"broker_order_id": internal_order_id, "status": order.status}
             else:

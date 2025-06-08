@@ -90,44 +90,59 @@ class OrderQueue:
             return False
     
     def dequeue_order(self, timeout: int = 5) -> Optional[QueuedOrder]:
-        """Get next order from queue (blocking)"""
+        """Get next order from queue (non-blocking with intelligent polling)"""
         try:
             redis_client = get_redis_connection()
             
-            # Try priority queue first, then regular queue
-            result = redis_client.blpop([
-                self.priority_queue_name,
-                self.queue_name
-            ], timeout=timeout)
-            
+            # First try non-blocking operations to avoid timeout errors
+            # Try priority queue first
+            result = redis_client.lpop(self.priority_queue_name)
             if result:
-                queue_name, order_data = result
-                order_dict = json.loads(order_data.decode('utf-8'))
+                order_dict = json.loads(result.decode('utf-8'))
                 order = QueuedOrder(**order_dict)
-                
-                # Move to processing queue
-                processing_data = {
-                    'order': asdict(order),
-                    'started_at': datetime.utcnow().isoformat(),
-                    'worker_id': f"worker_{uuid.uuid4().hex[:8]}"
-                }
-                redis_client.hset(
-                    self.processing_queue_name,
-                    order.order_id,
-                    json.dumps(processing_data)
-                )
-                
-                # Update statistics
-                self._update_stats("dequeued")
-                
-                logger.info(f"🔄 Dequeued order {order.order_id} from {queue_name.decode('utf-8')}")
-                return order
+                return self._process_dequeued_order(order, "priority_queue")
             
+            # Then try regular queue
+            result = redis_client.lpop(self.queue_name)
+            if result:
+                order_dict = json.loads(result.decode('utf-8'))
+                order = QueuedOrder(**order_dict)
+                return self._process_dequeued_order(order, "regular_queue")
+            
+            # If no orders found, return None immediately (no blocking)
             return None
             
         except Exception as e:
             logger.error(f"❌ Failed to dequeue order: {e}")
             return None
+    
+    def _process_dequeued_order(self, order: QueuedOrder, queue_type: str) -> QueuedOrder:
+        """Process a dequeued order and move it to processing queue"""
+        try:
+            redis_client = get_redis_connection()
+            
+            # Move to processing queue
+            processing_data = {
+                'order': asdict(order),
+                'started_at': datetime.utcnow().isoformat(),
+                'worker_id': f"worker_{uuid.uuid4().hex[:8]}",
+                'queue_type': queue_type
+            }
+            redis_client.hset(
+                self.processing_queue_name,
+                order.order_id,
+                json.dumps(processing_data)
+            )
+            
+            # Update statistics
+            self._update_stats("dequeued")
+            
+            logger.info(f"🔄 Dequeued order {order.order_id} from {queue_type}")
+            return order
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to process dequeued order {order.order_id}: {e}")
+            return order
     
     def complete_order(self, order_id: str, result: ExecutionResult):
         """Mark order as completed and remove from processing"""
@@ -307,10 +322,10 @@ class OrderQueue:
 class OrderProcessor:
     """High-performance order processor using Redis queues"""
     
-    def __init__(self, queue_name: str = "trading_orders", worker_id: Optional[str] = None):
+    def __init__(self, queue_name: str = "trading_orders", worker_id: Optional[str] = None, db_manager=None):
         self.queue = OrderQueue(queue_name)
         self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
-        self.order_executor = OrderExecutor()
+        self.order_executor = OrderExecutor(db_manager=db_manager)
         self.is_running = False
         self.processed_count = 0
         self.error_count = 0
@@ -320,12 +335,15 @@ class OrderProcessor:
         self.is_running = True
         logger.info(f"🚀 Order processor {self.worker_id} started")
         
+        consecutive_empty_polls = 0
+        
         try:
             while self.is_running:
                 # Process retry queue first
                 retry_orders = self.queue.process_retry_queue()
                 if retry_orders:
                     logger.info(f"🔄 Processed {len(retry_orders)} retry orders")
+                    consecutive_empty_polls = 0  # Reset counter
                 
                 # Get next order from queue
                 order = self.queue.dequeue_order(timeout=5)
@@ -333,14 +351,25 @@ class OrderProcessor:
                 if order:
                     await self._process_order(order)
                     self.processed_count += 1
+                    consecutive_empty_polls = 0  # Reset counter
                     
                     # Check if we've reached max orders
                     if max_orders and self.processed_count >= max_orders:
                         logger.info(f"🎯 Processed {max_orders} orders, stopping")
                         break
-                
-                # Small delay to prevent CPU spinning
-                await asyncio.sleep(0.1)
+                else:
+                    # No orders found - implement intelligent backoff
+                    consecutive_empty_polls += 1
+                    
+                    # Gradually increase sleep time when no orders are found
+                    if consecutive_empty_polls < 10:
+                        sleep_time = 0.1  # Fast polling for first 10 attempts
+                    elif consecutive_empty_polls < 50:
+                        sleep_time = 1.0  # Medium polling for next 40 attempts
+                    else:
+                        sleep_time = 5.0  # Slow polling after 50 empty attempts
+                    
+                    await asyncio.sleep(sleep_time)
                 
         except KeyboardInterrupt:
             logger.info("⏹️ Order processor stopped by user")

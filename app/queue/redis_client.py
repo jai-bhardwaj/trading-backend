@@ -9,7 +9,7 @@ import redis
 import logging
 from typing import Optional
 from redis.connection import ConnectionPool
-from redis.exceptions import ConnectionError, TimeoutError
+from redis.exceptions import ConnectionError, TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,8 @@ class RedisConfig:
         self.db = int(os.getenv("REDIS_DB", 0))
         self.password = os.getenv("REDIS_PASSWORD")
         self.max_connections = int(os.getenv("REDIS_MAX_CONNECTIONS", 20))
-        self.socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", 5.0))
-        self.socket_connect_timeout = float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", 5.0))
+        self.socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", 30.0))
+        self.socket_connect_timeout = float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", 30.0))
         self.retry_on_timeout = True
         self.health_check_interval = 30
 
@@ -62,7 +62,7 @@ class RedisClient:
             logger.info(f"✅ Connected to Redis at {self.config.host}:{self.config.port}")
             return True
             
-        except (ConnectionError, TimeoutError) as e:
+        except (ConnectionError, RedisTimeoutError) as e:
             logger.error(f"❌ Failed to connect to Redis: {e}")
             self._is_connected = False
             return False

@@ -15,13 +15,16 @@ from SmartApi import SmartConnect
 from app.brokers.base import (
     BrokerInterface, BrokerOrder, BrokerPosition, BrokerBalance, BrokerTrade, MarketData,
     register_broker, AuthenticationError, OrderError, SymbolNotFoundError,
-    InsufficientFundsError, RateLimitError
+    InsufficientFundsError, RateLimitError, MarketClosedError, InvalidOrderParametersError,
+    BrokerConnectionError, OrderTimeoutError
 )
 from app.models.base import BrokerName, OrderSide, OrderType, ProductType, OrderStatus
 from app.brokers.mapping_utils import (
     map_order_to_angelone, map_angelone_order_status, map_angelone_positions,
     map_angelone_balance, map_angelone_trade_history, fetch_symbol_token
 )
+from app.core.rate_limiter import check_broker_rate_limit, RateLimitType
+from app.core.circuit_breaker import get_broker_circuit_breaker, CircuitBreakerOpenException
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +141,7 @@ class AngelOneBroker(BrokerInterface):
     
     async def _run_api_call(self, method_name: str, *args, **kwargs) -> Any:
         """
-        Execute Angel One API call safely in thread pool
+        Execute Angel One API call safely in thread pool with rate limiting and circuit breaker
         
         Args:
             method_name: Name of the SmartAPI method to call
@@ -151,7 +154,27 @@ class AngelOneBroker(BrokerInterface):
         Raises:
             Various broker exceptions based on API response
         """
+        # Check rate limit before making API call
+        rate_limit_result = await check_broker_rate_limit("ANGEL_ONE")
+        if not rate_limit_result.allowed:
+            raise RateLimitError(
+                f"Angel One API rate limit exceeded. Retry after {rate_limit_result.retry_after} seconds",
+                error_code="RATE_LIMIT_EXCEEDED"
+            )
+        
         await self._ensure_authenticated()
+        
+        # Use circuit breaker for fault tolerance
+        circuit_breaker = get_broker_circuit_breaker()
+        
+        try:
+            return await circuit_breaker.call(self._execute_api_call, method_name, *args, **kwargs)
+        except CircuitBreakerOpenException as e:
+            self.logger.error(f"🔌 CIRCUIT BREAKER OPEN: Angel One API calls are currently blocked due to repeated failures")
+            raise BrokerConnectionError(f"Angel One service temporarily unavailable: {e}")
+    
+    async def _execute_api_call(self, method_name: str, *args, **kwargs) -> Any:
+        """Execute the actual API call - used by circuit breaker."""
         
         if not hasattr(self._smart_api, method_name):
             raise AttributeError(f"SmartConnect has no method '{method_name}'")
@@ -169,23 +192,58 @@ class AngelOneBroker(BrokerInterface):
                     error_message = result.get("message", "Unknown API error")
                     error_code = result.get("errorcode", "N/A")
                     
+                    # Enhanced error logging for frontend
+                    error_details = {
+                        "method": method_name,
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "full_response": result,
+                        "args": args,
+                        "kwargs": kwargs,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # Log detailed error information
+                    self.logger.error(f"🚨 ANGEL ONE API ERROR: {error_details}")
+                    
                     # Map specific error codes to appropriate exceptions
-                    if "insufficient" in error_message.lower():
+                    if "insufficient" in error_message.lower() or "balance" in error_message.lower():
+                        self.logger.error(f"💰 INSUFFICIENT FUNDS ERROR: Available balance too low for order")
                         raise InsufficientFundsError(f"Angel One API Error ({error_code}): {error_message}")
-                    elif "symbol" in error_message.lower() and "not found" in error_message.lower():
+                    elif "symbol" in error_message.lower() and ("not found" in error_message.lower() or "invalid" in error_message.lower()):
+                        self.logger.error(f"🔍 SYMBOL NOT FOUND ERROR: Invalid or non-existent symbol")
                         raise SymbolNotFoundError(f"Angel One API Error ({error_code}): {error_message}")
-                    elif "rate limit" in error_message.lower() or error_code == "AG8001":
+                    elif "rate limit" in error_message.lower() or error_code == "AG8001" or "too many" in error_message.lower():
+                        self.logger.error(f"⏱️ RATE LIMIT ERROR: API call limit exceeded")
                         raise RateLimitError(f"Angel One API Error ({error_code}): {error_message}")
+                    elif "market" in error_message.lower() and "closed" in error_message.lower():
+                        self.logger.error(f"🏪 MARKET CLOSED ERROR: Trading not allowed during market closure")
+                        raise MarketClosedError(f"Angel One API Error ({error_code}): {error_message}")
+                    elif "order" in error_message.lower() and ("rejected" in error_message.lower() or "failed" in error_message.lower()):
+                        self.logger.error(f"❌ ORDER REJECTION ERROR: Order validation failed")
+                        raise OrderError(f"Angel One API Error ({error_code}): {error_message}")
+                    elif "authentication" in error_message.lower() or "login" in error_message.lower() or error_code == "AG8002":
+                        self.logger.error(f"🔐 AUTHENTICATION ERROR: Session expired or invalid")
+                        raise AuthenticationError(f"Angel One API Error ({error_code}): {error_message}")
                     else:
+                        self.logger.error(f"❓ UNKNOWN API ERROR: Unhandled error type")
                         raise OrderError(f"Angel One API Error ({error_code}): {error_message}")
             
             return result
             
         except Exception as e:
-            if isinstance(e, (InsufficientFundsError, SymbolNotFoundError, RateLimitError, OrderError)):
+            if isinstance(e, (InsufficientFundsError, SymbolNotFoundError, RateLimitError, OrderError, AuthenticationError)):
                 raise
             else:
-                self.logger.error(f"Error during Angel One API call {method_name}: {e}")
+                error_details = {
+                    "method": method_name,
+                    "exception_type": type(e).__name__,
+                    "exception_message": str(e),
+                    "args": args,
+                    "kwargs": kwargs,
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.logger.error(f"🚨 UNEXPECTED ERROR DURING API CALL: {error_details}")
                 raise OrderError(f"Failed to execute Angel One API call {method_name}: {e}")
     
     async def place_order(self, order: BrokerOrder) -> str:
@@ -203,16 +261,35 @@ class AngelOneBroker(BrokerInterface):
             InsufficientFundsError: If insufficient funds
             SymbolNotFoundError: If symbol not found
         """
+        order_log_data = {
+            "symbol": order.symbol,
+            "exchange": order.exchange,
+            "side": order.side.value,
+            "order_type": order.order_type.value,
+            "product_type": order.product_type.value,
+            "quantity": order.quantity,
+            "price": order.price,
+            "trigger_price": getattr(order, 'trigger_price', None),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        self.logger.info(f"🚀 PLACING ORDER: {order_log_data}")
+        
         try:
             # Validate order
             self.validate_order(order)
             
             # Fetch symbol token (required for Angel One)
+            self.logger.info(f"🔍 Fetching symbol token for {order.symbol} on {order.exchange}...")
             symbol_result = await self._fetch_symbol_token(order.symbol, order.exchange)
             if not symbol_result:
-                raise SymbolNotFoundError(f"Symbol {order.symbol} not found on {order.exchange}")
+                error_msg = f"Symbol {order.symbol} not found on {order.exchange}"
+                self.logger.error(f"❌ ORDER REJECTED - SYMBOL NOT FOUND: {error_msg}")
+                self.logger.error(f"📋 Order Details: {order_log_data}")
+                raise SymbolNotFoundError(error_msg)
             
             symbol_token, trading_symbol = symbol_result
+            self.logger.info(f"✅ Symbol token found: {trading_symbol} -> {symbol_token}")
             
             # Map order to Angel One format
             order_params = await asyncio.to_thread(
@@ -225,9 +302,11 @@ class AngelOneBroker(BrokerInterface):
             order_params["symboltoken"] = symbol_token
             order_params["tradingsymbol"] = trading_symbol
             
-            self.logger.info(f"Placing Angel One order: {order_params}")
+            # Log the final order parameters being sent to Angel One
+            self.logger.info(f"📨 Angel One Order Parameters: {order_params}")
             
             # Place order
+            self.logger.info("🔄 Sending order to Angel One...")
             result_data = await self._run_api_call("placeOrder", order_params)
             
             # Extract order ID
@@ -238,19 +317,82 @@ class AngelOneBroker(BrokerInterface):
                 broker_order_id = result_data
             
             if not broker_order_id:
-                raise OrderError("Order placement succeeded but no order ID returned")
+                error_msg = "Order placement succeeded but no order ID returned"
+                self.logger.error(f"❌ ORDER PLACEMENT ERROR: {error_msg}")
+                self.logger.error(f"📋 Order Details: {order_log_data}")
+                self.logger.error(f"📤 Angel One Response: {result_data}")
+                raise OrderError(error_msg)
             
-            self.logger.info(f"Angel One order placed successfully: {broker_order_id}")
+            # Log successful order placement
+            success_log = {
+                **order_log_data,
+                "broker_order_id": broker_order_id,
+                "status": "PLACED",
+                "angel_one_response": result_data
+            }
+            self.logger.info(f"✅ ORDER PLACED SUCCESSFULLY: {success_log}")
+            
             return str(broker_order_id)
             
-        except Exception as e:
-            self.logger.error(f"Failed to place Angel One order: {e}")
+        except InsufficientFundsError as e:
+            rejection_log = {
+                **order_log_data,
+                "status": "REJECTED",
+                "rejection_reason": "INSUFFICIENT_FUNDS",
+                "error_message": str(e),
+                "error_type": "InsufficientFundsError"
+            }
+            self.logger.error(f"❌ ORDER REJECTED - INSUFFICIENT FUNDS: {rejection_log}")
             raise
+            
+        except SymbolNotFoundError as e:
+            rejection_log = {
+                **order_log_data,
+                "status": "REJECTED",
+                "rejection_reason": "SYMBOL_NOT_FOUND",
+                "error_message": str(e),
+                "error_type": "SymbolNotFoundError"
+            }
+            self.logger.error(f"❌ ORDER REJECTED - SYMBOL NOT FOUND: {rejection_log}")
+            raise
+            
+        except RateLimitError as e:
+            rejection_log = {
+                **order_log_data,
+                "status": "REJECTED",
+                "rejection_reason": "RATE_LIMIT_EXCEEDED",
+                "error_message": str(e),
+                "error_type": "RateLimitError"
+            }
+            self.logger.error(f"❌ ORDER REJECTED - RATE LIMIT: {rejection_log}")
+            raise
+            
+        except OrderError as e:
+            rejection_log = {
+                **order_log_data,
+                "status": "REJECTED",
+                "rejection_reason": "ORDER_ERROR",
+                "error_message": str(e),
+                "error_type": "OrderError"
+            }
+            self.logger.error(f"❌ ORDER REJECTED - ORDER ERROR: {rejection_log}")
+            raise
+            
+        except Exception as e:
+            rejection_log = {
+                **order_log_data,
+                "status": "REJECTED",
+                "rejection_reason": "UNKNOWN_ERROR",
+                "error_message": str(e),
+                "error_type": type(e).__name__
+            }
+            self.logger.error(f"❌ ORDER REJECTED - UNKNOWN ERROR: {rejection_log}")
+            raise OrderError(f"Failed to place order: {e}")
     
     async def _fetch_symbol_token(self, symbol: str, exchange: str) -> Optional[tuple]:
         """Fetch symbol token using the mapping utility"""
         try:
-            return await asyncio.to_thread(fetch_symbol_token, self._smart_api, symbol, exchange)
+            return await fetch_symbol_token(self._smart_api, symbol, exchange)
         except Exception as e:
             self.logger.error(f"Failed to fetch symbol token for {symbol}: {e}")
             return None
@@ -377,6 +519,10 @@ class AngelOneBroker(BrokerInterface):
         try:
             position_data = await self._run_api_call("position")
             
+            if position_data is None:
+                self.logger.info("Angel One returned no position data")
+                return []
+            
             if isinstance(position_data, list):
                 positions = []
                 mapped_positions = await asyncio.to_thread(map_angelone_positions, position_data)
@@ -448,6 +594,10 @@ class AngelOneBroker(BrokerInterface):
         try:
             # Angel One tradeBook doesn't typically accept date filters
             trade_data = await self._run_api_call("tradeBook")
+            
+            if trade_data is None:
+                self.logger.info("Angel One returned no trade data")
+                return []
             
             if isinstance(trade_data, list):
                 trades = []
@@ -554,16 +704,14 @@ class AngelOneBroker(BrokerInterface):
             if isinstance(ltp_data, dict):
                 return MarketData(
                     symbol=symbol,
-                    exchange=exchange,
-                    ltp=float(ltp_data.get("ltp", 0)),
+                    timestamp=datetime.utcnow(),
                     open=float(ltp_data.get("open", 0)),
                     high=float(ltp_data.get("high", 0)),
                     low=float(ltp_data.get("low", 0)),
-                    close=float(ltp_data.get("close", 0)),
+                    close=float(ltp_data.get("ltp", 0)),  # Use LTP as close price
                     volume=int(ltp_data.get("volume", 0)),
                     change=float(ltp_data.get("change", 0)),
-                    change_pct=float(ltp_data.get("changepercent", 0)),
-                    timestamp=datetime.utcnow()
+                    change_pct=float(ltp_data.get("changepercent", 0))
                 )
             
             return None

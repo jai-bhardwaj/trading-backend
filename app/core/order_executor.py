@@ -20,7 +20,7 @@ import json
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, select
 
-from app.database import DatabaseManager
+from app.database import DatabaseManager, get_database_manager
 from app.models.base import (
     Order, OrderStatus, OrderSide, OrderType, ProductType,
     BrokerConfig, User, Position, Balance, Trade
@@ -29,6 +29,7 @@ from app.core.risk_manager import risk_manager, RiskCheckContext, RiskCheckResul
 from app.strategies.base import StrategySignal
 from app.brokers.angelone_new import AngelOneBroker
 from app.core.interfaces import Order as OrderInterface
+from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class CircuitBreaker:
             return True
         elif self.state == CircuitBreakerState.OPEN:
             if self.last_failure_time and \
-               datetime.utcnow() - self.last_failure_time > timedelta(seconds=self.timeout_seconds):
+               datetime_now() - self.last_failure_time > timedelta(seconds=self.timeout_seconds):
                 self.state = CircuitBreakerState.HALF_OPEN
                 return True
             return False
@@ -110,7 +111,7 @@ class CircuitBreaker:
     def record_failure(self):
         """Record failed execution"""
         self.failure_count += 1
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime_now()
         
         if self.failure_count >= self.failure_threshold:
             self.state = CircuitBreakerState.OPEN
@@ -146,27 +147,29 @@ class OrderExecutor:
         Returns:
             ExecutionResult with execution details
         """
-        start_time = datetime.utcnow()
+        start_time = datetime_now()
         result = ExecutionResult(
             success=False,
             status=ExecutionStatus.PENDING
         )
         
-        # Use provided db_manager or create new one
+        # Use provided db_manager or get global instance
         db_manager = self.db_manager
         if not db_manager:
-            from app.database import DatabaseManager
-            db_manager = DatabaseManager()
-            try:
-                await db_manager.initialize()
-            except Exception as e:
-                logger.error(f"Database not initialized: {e}")
-                result.status = ExecutionStatus.FAILED
-                result.message = f"Database not initialized: {str(e)}"
-                return result
+            from app.database import get_database_manager
+            db_manager = get_database_manager()
+            if not db_manager._initialized:
+                logger.warning("Using uninitialized database manager - attempting to initialize")
+                try:
+                    await db_manager.initialize()
+                except Exception as e:
+                    logger.error(f"Database not initialized: {e}")
+                    result.status = ExecutionStatus.FAILED
+                    result.message = f"Database not initialized: {str(e)}"
+                    return result
         
         try:
-            async with db_manager.get_session() as db:
+            async with db_manager.get_async_session() as db:
                 # Get order from database
                 stmt = select(Order).where(Order.id == order_id)
                 result_set = await db.execute(stmt)
@@ -190,7 +193,7 @@ class OrderExecutor:
                 
                 # Update order status
                 order.status = OrderStatus.COMPLETE
-                order.executed_at = datetime.utcnow()
+                order.executed_at = datetime_now()
                 await db.commit()
                 
         except Exception as e:
@@ -200,7 +203,7 @@ class OrderExecutor:
             
         finally:
             # Calculate execution time
-            result.execution_time = (datetime.utcnow() - start_time).total_seconds()
+            result.execution_time = (datetime_now() - start_time).total_seconds()
             
             # Store execution history
             self.execution_history.append(result)
@@ -243,7 +246,7 @@ class OrderExecutor:
             recent_orders = db.query(Order).filter(
                 and_(
                     Order.user_id == order.user_id,
-                    Order.created_at > datetime.utcnow() - timedelta(hours=1)
+                    Order.created_at > datetime_now() - timedelta(hours=1)
                 )
             ).all()
             
@@ -293,7 +296,7 @@ class OrderExecutor:
                 
                 # Submit order to broker
                 result.status = ExecutionStatus.SUBMITTED_TO_BROKER
-                await self._update_order_status(db, order, OrderStatus.SUBMITTED, "Order submitted to broker")
+                await self._update_order_status(db, order, OrderStatus.QUEUED, "Order submitted to broker")
                 
                 # Execute order
                 broker_result = await asyncio.wait_for(
@@ -356,7 +359,7 @@ class OrderExecutor:
             price=order.price,
             trigger_price=order.trigger_price,
             variety=order.variety,
-            is_paper_trade=order.is_paper_trade,
+            broker_id="angelone",  # Default broker
         )
     
     def _is_retryable_error(self, error_code: Optional[str]) -> bool:
@@ -455,7 +458,7 @@ class OrderExecutor:
         try:
             order.status = status
             order.status_message = message
-            order.updated_at = datetime.utcnow()
+            order.updated_at = datetime_now()
             
             if broker_order_id:
                 order.broker_order_id = broker_order_id
@@ -480,7 +483,7 @@ class OrderExecutor:
                     quantity=order.quantity,
                     price=order.price or 0,
                     broker_order_id=result.broker_order_id,
-                    execution_time=datetime.utcnow(),
+                    execution_time=datetime_now(),
                     pnl=0.0  # Will be calculated later
                 )
                 db.add(trade)
@@ -493,7 +496,7 @@ class OrderExecutor:
         """Log execution events for audit trail"""
         try:
             log_entry = {
-                'timestamp': datetime.utcnow().isoformat(),
+                'timestamp': datetime_now().isoformat(),
                 'event': event,
                 'order_id': order.id if order else None,
                 'user_id': order.user_id if order else None,
@@ -541,16 +544,25 @@ class OrderExecutor:
         """Cancel an existing order"""
         result = ExecutionResult(success=False, status=ExecutionStatus.PENDING)
         
-        db_manager = DatabaseManager()
+        db_manager = self.db_manager or get_database_manager()
+        if not db_manager._initialized:
+            logger.warning("Database manager not initialized in cancel_order") 
+            try:
+                await db_manager.initialize()
+            except Exception as e:
+                result.status = ExecutionStatus.FAILED
+                result.message = f"Database initialization failed: {str(e)}"
+                return result
+        
         try:
-            async with db_manager.get_session() as db:
+            async with db_manager.get_async_session() as db:
                 order = db.query(Order).filter(Order.id == order_id).first()
                 if not order:
                     result.message = f"Order {order_id} not found"
                     result.status = ExecutionStatus.FAILED
                     return result
                 
-                if order.status not in [OrderStatus.PENDING, OrderStatus.PLACED, OrderStatus.SUBMITTED]:
+                if order.status not in [OrderStatus.PENDING, OrderStatus.PLACED, OrderStatus.QUEUED]:
                     result.message = f"Order {order_id} cannot be cancelled (status: {order.status})"
                     result.status = ExecutionStatus.FAILED
                     return result
