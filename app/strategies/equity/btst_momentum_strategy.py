@@ -7,10 +7,12 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time, timedelta
-from app.strategies.base_strategy import BaseStrategy
+from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..registry import AutomaticStrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+@AutomaticStrategyRegistry.register("btst_momentum_gain_4", AssetClass.EQUITY)
 class BTSTMomentumGain4Strategy(BaseStrategy):
     """
     BTST Momentum Gain 4% Strategy for Equity

@@ -322,10 +322,10 @@ class OrderQueue:
 class OrderProcessor:
     """High-performance order processor using Redis queues"""
     
-    def __init__(self, queue_name: str = "trading_orders", worker_id: Optional[str] = None):
+    def __init__(self, queue_name: str = "trading_orders", worker_id: Optional[str] = None, db_manager=None):
         self.queue = OrderQueue(queue_name)
         self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
-        self.order_executor = OrderExecutor()
+        self.order_executor = OrderExecutor(db_manager=db_manager)
         self.is_running = False
         self.processed_count = 0
         self.error_count = 0

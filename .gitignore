@@ -256,4 +256,12 @@ monitoring/*.temp
 
 # Monitoring and metrics
 metrics/
-monitoring/local_*
+monitoring/local_*# Strategy management scripts
+strategy-cli
+strategy-unified
+
+# Removed crypto and derivatives strategies
+app/strategies/crypto/
+app/strategies/derivatives/
+app/strategies/equity/simple_sma_strategy.py
+app/strategies/equity/example_strategy.py

@@ -40,6 +40,13 @@ class RedisBasedTradingEngine:
     """
     
     def __init__(self, worker_count: int = 4, max_queue_size: int = 10000, db_manager=None):
+        # Use provided database manager or get global instance
+        if db_manager:
+            self.db_manager = db_manager
+        else:
+            from app.database import get_database_manager
+            self.db_manager = get_database_manager()
+        
         # Queue configuration
         self.worker_config = WorkerConfig(
             worker_count=worker_count,
@@ -57,7 +64,7 @@ class RedisBasedTradingEngine:
         )
         
         # Initialize queue manager
-        self.queue_manager = QueueManager(self.worker_config, self.queue_config)
+        self.queue_manager = QueueManager(self.worker_config, self.queue_config, self.db_manager)
         
         # Engine state
         self.is_running = False
@@ -77,13 +84,6 @@ class RedisBasedTradingEngine:
         
         # Setup signal handlers
         self._setup_signal_handlers()
-        
-        # Use provided database manager or get global instance
-        if db_manager:
-            self.db_manager = db_manager
-        else:
-            from app.database import get_database_manager
-            self.db_manager = get_database_manager()
     
     async def start(self):
         """Start the Redis-based trading engine"""

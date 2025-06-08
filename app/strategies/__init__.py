@@ -122,37 +122,6 @@ def get_strategy_info():
         logger.error(f"Error getting strategy info: {e}")
         return {'error': str(e)}
 
-def validate_all_strategies():
-    """
-    Validate all registered strategies for completeness
-    
-    Returns:
-        Dict with validation results
-    """
-    try:
-        strategies = AutomaticStrategyRegistry.list_strategies()
-        results = {
-            'total_strategies': len(strategies),
-            'valid_strategies': [],
-            'invalid_strategies': [],
-            'validation_errors': {}
-        }
-        
-        for strategy_name in strategies:
-            if AutomaticStrategyRegistry.validate_strategy(strategy_name):
-                results['valid_strategies'].append(strategy_name)
-            else:
-                results['invalid_strategies'].append(strategy_name)
-                # Could add specific validation error details here
-        
-        logger.info(f"Strategy validation complete: {len(results['valid_strategies'])}/{len(strategies)} valid")
-        
-        return results
-        
-    except Exception as e:
-        logger.error(f"Error validating strategies: {e}")
-        return {'error': str(e)}
-
 # Auto-initialize when module is imported
 try:
     initialize_strategies()
@@ -178,6 +147,5 @@ __all__ = [
     # Utility functions
     'initialize_strategies',
     'reload_strategies',
-    'get_strategy_info',
-    'validate_all_strategies'
+    'get_strategy_info'
 ] 
