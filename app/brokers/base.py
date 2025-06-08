@@ -102,23 +102,48 @@ class BrokerTrade:
 
 @dataclass
 class MarketData:
-    """Real-time market data structure"""
+    """Market data structure"""
     symbol: str
-    exchange: str
-    ltp: float  # Last Traded Price
+    timestamp: datetime
     open: float
     high: float
     low: float
     close: float
     volume: int
-    change: float
-    change_pct: float
-    timestamp: datetime
+    previous_close: Optional[float] = None
+    change: Optional[float] = None
+    change_pct: Optional[float] = None
     
     def to_dict(self) -> Dict[str, Any]:
-        result = asdict(self)
-        result['timestamp'] = self.timestamp.isoformat()
-        return result
+        """Convert to dictionary"""
+        return {
+            'symbol': self.symbol,
+            'timestamp': self.timestamp.isoformat(),
+            'open': self.open,
+            'high': self.high,
+            'low': self.low,
+            'close': self.close,
+            'volume': self.volume,
+            'previous_close': self.previous_close,
+            'change': self.change,
+            'change_pct': self.change_pct
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MarketData':
+        """Create from dictionary"""
+        return cls(
+            symbol=data['symbol'],
+            timestamp=datetime.fromisoformat(data['timestamp']),
+            open=data['open'],
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            volume=data['volume'],
+            previous_close=data.get('previous_close'),
+            change=data.get('change'),
+            change_pct=data.get('change_pct')
+        )
 
 # Broker-specific exceptions
 class BrokerError(Exception):
@@ -130,23 +155,43 @@ class BrokerError(Exception):
         super().__init__(self.message)
 
 class AuthenticationError(BrokerError):
-    """Authentication failed with broker"""
+    """Raised when broker authentication fails"""
     pass
 
 class OrderError(BrokerError):
-    """Order placement/modification failed"""
+    """Base class for order-related errors"""
     pass
 
-class InsufficientFundsError(BrokerError):
-    """Insufficient funds for order"""
+class InsufficientFundsError(OrderError):
+    """Raised when account has insufficient funds for order"""
     pass
 
-class SymbolNotFoundError(BrokerError):
-    """Symbol not found or not tradeable"""
+class SymbolNotFoundError(OrderError):
+    """Raised when trading symbol is not found or invalid"""
     pass
 
 class RateLimitError(BrokerError):
-    """API rate limit exceeded"""
+    """Raised when API rate limit is exceeded"""
+    pass
+
+class MarketClosedError(OrderError):
+    """Raised when attempting to trade during market closure"""
+    pass
+
+class InvalidOrderParametersError(OrderError):
+    """Raised when order parameters are invalid"""
+    pass
+
+class BrokerConnectionError(BrokerError):
+    """Raised when broker connection fails"""
+    pass
+
+class OrderTimeoutError(OrderError):
+    """Raised when order execution times out"""
+    pass
+
+class PositionNotFoundError(BrokerError):
+    """Raised when requested position is not found"""
     pass
 
 class BrokerInterface(ABC):

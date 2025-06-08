@@ -43,9 +43,10 @@ class QueueConfig:
 class QueueManager:
     """Manages multiple Redis queues and workers for high-performance order processing"""
     
-    def __init__(self, worker_config: Optional[WorkerConfig] = None, queue_config: Optional[QueueConfig] = None):
+    def __init__(self, worker_config: Optional[WorkerConfig] = None, queue_config: Optional[QueueConfig] = None, db_manager=None):
         self.worker_config = worker_config or WorkerConfig()
         self.queue_config = queue_config or QueueConfig()
+        self.db_manager = db_manager
         
         # Initialize queues
         self.order_queue = OrderQueue(self.queue_config.queue_name)
@@ -157,7 +158,8 @@ class QueueManager:
             # Create worker
             worker = OrderProcessor(
                 queue_name=self.queue_config.queue_name,
-                worker_id=worker_id
+                worker_id=worker_id,
+                db_manager=self.db_manager
             )
             
             # Start worker in thread
@@ -466,7 +468,8 @@ class QueueManager:
             # Start new worker
             new_worker = OrderProcessor(
                 queue_name=self.queue_config.queue_name,
-                worker_id=worker_id
+                worker_id=worker_id,
+                db_manager=self.db_manager
             )
             
             new_thread = threading.Thread(

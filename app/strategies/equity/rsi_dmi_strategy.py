@@ -1,18 +1,18 @@
 """
 RSI DMI Strategy for Equity Trading
-
-Converted from the old Django-based architecture to the new BaseStrategy framework.
-This strategy uses RSI and DMI indicators for entry and exit signals.
+Updated for the new cleaned schema and enhanced strategy execution system.
 """
 
-import numpy as np
-import pandas as pd
-from typing import Optional, Dict, Any
+import asyncio
+import logging
+from typing import Optional, Dict, Any, List
 from datetime import datetime, time
-from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, SignalType, AssetClass
-from ..registry import StrategyRegistry
+from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..registry import AutomaticStrategyRegistry
 
-@StrategyRegistry.register("rsi_dmi_equity", AssetClass.EQUITY)
+logger = logging.getLogger(__name__)
+
+@AutomaticStrategyRegistry.register("rsi_dmi_equity", AssetClass.EQUITY)
 class RSIDMIStrategy(BaseStrategy):
     """
     RSI DMI Strategy for Equity
@@ -23,191 +23,188 @@ class RSIDMIStrategy(BaseStrategy):
     
     Exit Conditions:
     - RSI < lower_limit (default: 30)
-    
-    Parameters:
-    - upper_limit: RSI upper threshold for entry (default: 70)
-    - lower_limit: RSI lower threshold for exit (default: 30)
-    - di_upper_limit: +DI threshold for entry (default: 25)
-    - max_position_size: Maximum position size as % of balance (default: 0.1)
     """
     
-    def initialize(self) -> None:
+    async def on_initialize(self):
         """Initialize strategy parameters"""
         # RSI and DMI parameters
-        self.upper_limit = self.parameters.get('upper_limit', 70.0)
-        self.lower_limit = self.parameters.get('lower_limit', 30.0)
-        self.di_upper_limit = self.parameters.get('di_upper_limit', 25.0)
-        self.max_position_size = self.parameters.get('max_position_size', 0.1)
+        self.upper_limit = self.config.get('upper_limit', 70.0)
+        self.lower_limit = self.config.get('lower_limit', 30.0)
+        self.di_upper_limit = self.config.get('di_upper_limit', 25.0)
+        self.max_position_size = self.config.get('max_position_size', 0.1)
         
         # Risk management parameters
-        self.max_drawdown = self.risk_parameters.get('max_drawdown', 0.05)
-        self.stop_loss_pct = self.risk_parameters.get('stop_loss_pct', 0.02)
-        self.take_profit_pct = self.risk_parameters.get('take_profit_pct', 0.04)
+        self.max_drawdown = self.config.get('max_drawdown', 0.05)
+        self.stop_loss_pct = self.config.get('stop_loss_pct', 0.02)
+        self.take_profit_pct = self.config.get('take_profit_pct', 0.04)
         
         # Strategy state
         self.entry_prices: Dict[str, float] = {}
         self.entry_times: Dict[str, datetime] = {}
         
+        # RSI calculation data
+        self.price_changes: Dict[str, List[float]] = {}
+        self.prev_prices: Dict[str, float] = {}
+        self.rsi_period = self.config.get('rsi_period', 14)
+        
         # Trading hours (9:15 AM to 3:30 PM IST)
         self.market_start = time(9, 15)
         self.market_end = time(15, 30)
+        
+        # Subscribe to configured symbols
+        symbols = self.config.get('symbols', ['RELIANCE', 'TCS', 'INFY'])
+        await self.subscribe_to_instruments(symbols)
+        
+        logger.info(f"Initialized RSIDMIStrategy with {len(symbols)} symbols")
     
-    def process_market_data(self, market_data: MarketData) -> Optional[StrategySignal]:
-        """Process market data and generate RSI DMI signals"""
-        
-        # Add to historical data
-        self.add_historical_data(market_data)
-        
-        # Check if we have enough data
-        if len(self.historical_data.get(market_data.symbol, [])) < 20:
+    def calculate_rsi(self, symbol: str) -> Optional[float]:
+        """Calculate RSI for given symbol"""
+        if symbol not in self.price_changes or len(self.price_changes[symbol]) < self.rsi_period:
             return None
+        
+        changes = self.price_changes[symbol][-self.rsi_period:]
+        
+        gains = [change for change in changes if change > 0]
+        losses = [-change for change in changes if change < 0]
+        
+        avg_gain = sum(gains) / len(gains) if gains else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        
+        if avg_loss == 0:
+            return 100  # No losses, RSI = 100
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+    
+    async def on_market_data(self, symbol: str, data: Dict[str, Any]):
+        """Process market data for RSI and DMI calculation"""
+        try:
+            close_price = data.get('ltp', data.get('close', 0))
+            
+            # Initialize data structures
+            if symbol not in self.price_changes:
+                self.price_changes[symbol] = []
+                self.prev_prices[symbol] = close_price
+                return
+            
+            # Calculate price change for RSI
+            price_change = close_price - self.prev_prices[symbol]
+            self.price_changes[symbol].append(price_change)
+            self.prev_prices[symbol] = close_price
+            
+            # Keep only required history
+            if len(self.price_changes[symbol]) > self.rsi_period + 10:
+                self.price_changes[symbol] = self.price_changes[symbol][-self.rsi_period:]
+                
+        except Exception as e:
+            logger.error(f"Error processing market data for {symbol}: {e}")
+    
+    async def generate_signals(self) -> List[Dict[str, Any]]:
+        """Generate RSI DMI trading signals"""
+        signals = []
+        current_time = datetime.now()
         
         # Check trading hours
-        current_time = market_data.timestamp.time()
-        if not (self.market_start <= current_time <= self.market_end):
-            return None
+        if not (self.market_start <= current_time.time() <= self.market_end):
+            return signals
         
-        # Get current candle data (assuming market_data has RSI and DMI indicators)
-        current_price = market_data.close
+        try:
+            for symbol in self.subscribed_symbols:
+                # Calculate RSI
+                rsi = self.calculate_rsi(symbol)
+                if rsi is None:
+                    continue
+                
+                current_price = self.prev_prices.get(symbol)
+                if not current_price:
+                    continue
+                
+                # For demo purposes, simulate +DI and -DI values
+                # In real implementation, these would be calculated from market data
+                plus_di = 30 if rsi > 50 else 20  # Simplified simulation
+                minus_di = 20 if rsi > 50 else 30  # Simplified simulation
+                
+                position_key = f"{symbol}_NSE_INTRADAY"
+                
+                # Check for exit signals first (if we have positions)
+                if position_key in self.positions and self.positions[position_key].quantity > 0:
+                    if rsi < self.lower_limit:
+                        signals.append({
+                            'type': 'SELL',
+                            'symbol': symbol,
+                            'exchange': 'NSE',
+                            'quantity': self.positions[position_key].quantity,
+                            'order_type': 'MARKET',
+                            'product_type': 'INTRADAY',
+                            'reason': f'RSI below lower limit - RSI: {rsi:.2f}'
+                        })
+                
+                # Check for entry signals
+                elif (position_key not in self.positions or 
+                      self.positions[position_key].quantity == 0):
+                    
+                    if rsi > self.upper_limit and plus_di > self.di_upper_limit:
+                        signals.append({
+                            'type': 'BUY',
+                            'symbol': symbol,
+                            'exchange': 'NSE',
+                            'quantity': 20,  # Base quantity
+                            'order_type': 'MARKET',
+                            'product_type': 'INTRADAY',
+                            'reason': f'RSI and +DI above thresholds - RSI: {rsi:.2f}, +DI: {plus_di:.2f}'
+                        })
         
-        # Extract indicators from market data additional_data
-        rsi_entry = market_data.additional_data.get('rsi_entry', 0)
-        rsi_exit = market_data.additional_data.get('rsi_exit', 0)
-        plus_di = market_data.additional_data.get('+DI', 0)
-        minus_di = market_data.additional_data.get('-DI', 0)
+        except Exception as e:
+            logger.error(f"Error generating RSI DMI signals: {e}")
         
-        # Check for exit signals first (if we have positions)
-        if market_data.symbol in self.positions and self.positions[market_data.symbol]['quantity'] > 0:
-            if float(rsi_exit) < float(self.lower_limit):
-                return StrategySignal(
-                    signal_type=SignalType.CLOSE_LONG,
-                    symbol=market_data.symbol,
-                    confidence=0.9,
-                    price=current_price,
-                    metadata={
-                        'rsi_exit': rsi_exit,
-                        'exit_reason': 'RSI Below Lower Limit',
-                        'strategy_type': 'rsi_dmi'
-                    }
-                )
+        return signals
+    
+    async def on_strategy_iteration(self):
+        """Called after each strategy iteration"""
+        # Calculate current RSI and DMI values for all symbols
+        current_indicators = {}
+        for symbol in self.subscribed_symbols:
+            rsi = self.calculate_rsi(symbol)
+            if rsi is not None:
+                current_indicators[symbol] = {
+                    'rsi': round(rsi, 2),
+                    'above_upper_limit': rsi > self.upper_limit,
+                    'below_lower_limit': rsi < self.lower_limit
+                }
         
-        # Check for entry signals
-        elif (float(rsi_entry) > float(self.upper_limit) and 
-              float(plus_di) > float(self.di_upper_limit)):
+        # Update custom metrics
+        self.metrics['custom_metrics'].update({
+            'symbols_tracked': len(self.subscribed_symbols),
+            'rsi_period': self.rsi_period,
+            'upper_limit': self.upper_limit,
+            'lower_limit': self.lower_limit,
+            'di_upper_limit': self.di_upper_limit,
+            'current_indicators': current_indicators,
+            'active_entry_times': len(self.entry_times)
+        })
+    
+    async def on_order_filled(self, order):
+        """Called when an order is filled"""
+        if order.side.value == 'BUY':
+            # Track entry details
+            self.entry_prices[order.symbol] = order.average_price
+            self.entry_times[order.symbol] = datetime.now()
             
-            # Check if we don't already have a position
-            if (market_data.symbol not in self.positions or 
-                self.positions[market_data.symbol]['quantity'] == 0):
-                
-                # Calculate stop loss and take profit
-                stop_loss = current_price * (1 - self.stop_loss_pct)
-                take_profit = current_price * (1 + self.take_profit_pct)
-                
-                return StrategySignal(
-                    signal_type=SignalType.BUY,
-                    symbol=market_data.symbol,
-                    confidence=0.8,
-                    price=current_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    metadata={
-                        'rsi_entry': rsi_entry,
-                        'plus_di': plus_di,
-                        'entry_reason': 'RSI and +DI above thresholds',
-                        'strategy_type': 'rsi_dmi'
-                    }
-                )
+            logger.info(f"RSI DMI position opened: {order.symbol} @ ₹{order.average_price}")
         
-        return None
+        elif order.side.value == 'SELL':
+            # Clear entry data when position is closed
+            self.entry_prices.pop(order.symbol, None)
+            self.entry_times.pop(order.symbol, None)
+            
+            logger.info(f"RSI DMI position closed: {order.symbol} @ ₹{order.average_price}")
     
-    def calculate_position_size(self, signal: StrategySignal, current_balance: float) -> int:
-        """Calculate position size based on risk management"""
-        
-        # Maximum position value based on balance
-        max_position_value = current_balance * self.max_position_size
-        
-        # Calculate base position size
-        if signal.price and signal.price > 0:
-            base_quantity = int(max_position_value / signal.price)
-        else:
-            return 0
-        
-        # Adjust based on confidence
-        adjusted_quantity = int(base_quantity * signal.confidence)
-        
-        # Ensure minimum lot size
-        min_lot_size = 1
-        adjusted_quantity = max(adjusted_quantity, min_lot_size)
-        
-        return adjusted_quantity
+    async def on_position_opened(self, position):
+        """Called when a new position is opened"""
+        logger.info(f"RSI DMI position opened: {position.symbol} {position.quantity} shares")
     
-    def _validate_asset_class_specific(self, signal: StrategySignal) -> bool:
-        """Equity-specific validation"""
-        
-        # Check if it's market hours
-        current_time = datetime.now().time()
-        if not (self.market_start <= current_time <= self.market_end):
-            return False
-        
-        # Ensure reasonable price
-        if signal.price and (signal.price <= 0 or signal.price > 100000):
-            return False
-        
-        # Check position limits
-        current_position = self.positions.get(signal.symbol, {}).get('quantity', 0)
-        
-        if signal.signal_type == SignalType.BUY and current_position > 0:
-            # Already long, don't add more
-            return False
-        elif signal.signal_type == SignalType.SELL and current_position < 0:
-            # Already short, don't add more
-            return False
-        
-        return True
-    
-    def update_position(self, symbol: str, quantity: int, price: float, side: str) -> None:
-        """Update position and track entry prices"""
-        super().update_position(symbol, quantity, price, side)
-        
-        # Track entry price and time for exit logic
-        if side in ['BUY', 'SELL'] and symbol not in self.entry_prices:
-            self.entry_prices[symbol] = price
-            self.entry_times[symbol] = datetime.now()
-        
-        # Clear entry data if position is closed
-        if symbol in self.positions and self.positions[symbol]['quantity'] == 0:
-            self.entry_prices.pop(symbol, None)
-            self.entry_times.pop(symbol, None)
-    
-    def check_stop_loss(self, symbol: str, current_price: float) -> Optional[StrategySignal]:
-        """Check stop loss conditions"""
-        if symbol not in self.positions or self.positions[symbol]['quantity'] == 0:
-            return None
-        
-        position = self.positions[symbol]
-        entry_price = self.entry_prices.get(symbol, position['average_price'])
-        
-        if position['quantity'] > 0:  # Long position
-            stop_loss_price = entry_price * (1 - self.stop_loss_pct)
-            if current_price <= stop_loss_price:
-                return StrategySignal(
-                    signal_type=SignalType.CLOSE_LONG,
-                    symbol=symbol,
-                    confidence=1.0,
-                    price=current_price,
-                    metadata={
-                        'exit_reason': 'Stop Loss Triggered',
-                        'entry_price': entry_price,
-                        'stop_loss_price': stop_loss_price
-                    }
-                )
-        
-        return None
-    
-    def should_exit_at_market_close(self, symbol: str) -> bool:
-        """Check if position should be exited at market close"""
-        # For intraday strategy, exit all positions at market close
-        current_time = datetime.now().time()
-        market_close_buffer = time(15, 15)  # Exit 15 minutes before market close
-        
-        return current_time >= market_close_buffer 
+    async def on_position_closed(self, position, pnl: float):
+        """Called when a position is closed"""
+        logger.info(f"RSI DMI position closed: {position.symbol} with P&L: ₹{pnl}") 

@@ -20,6 +20,7 @@ from collections import defaultdict
 from app.database import DatabaseManager
 from app.models.base import AssetClass, Strategy, StrategyStatus
 from sqlalchemy import select, text
+from app.utils.timezone_utils import ist_utcnow as datetime_now, IST  # IST replacement
 
 load_dotenv()
 
@@ -68,10 +69,18 @@ class InstrumentManager:
         self.base_url = "https://apiconnect.angelone.in"
         self.auth_token: Optional[str] = None
         
+        # Configurable instrument limits
+        self.max_equity_instruments = int(os.getenv("MAX_EQUITY_INSTRUMENTS", "1000"))
+        self.max_derivatives_instruments = int(os.getenv("MAX_DERIVATIVES_INSTRUMENTS", "500"))
+        self.max_total_instruments = int(os.getenv("MAX_TOTAL_INSTRUMENTS", "2000"))
+        
+        # Load all instruments flag
+        self.load_all_instruments = os.getenv("LOAD_ALL_INSTRUMENTS", "false").lower() == "true"
+        
         # Filtering configuration
         self.equity_filters = {
             'exchanges': ['NSE', 'BSE'],
-            'instrument_types': ['EQ'],
+            'instrument_types': ['EQ', 'EQUITY'],  # Added EQUITY as alternative
             'min_market_cap': 1000,  # Crores
             'exclude_patterns': ['BE', 'BZ', 'IL', 'BL']  # Exclude illiquid segments
         }
@@ -89,11 +98,20 @@ class InstrumentManager:
         try:
             self.session = aiohttp.ClientSession()
             
-            # Try to authenticate with AngelOne
-            await self.authenticate()
-            
-            # Fetch instruments
-            await self.fetch_instruments()
+            # Check if AngelOne credentials are properly configured
+            if self._are_credentials_configured():
+                logger.info("🔑 AngelOne credentials found, attempting authentication...")
+                # Try to authenticate with AngelOne
+                auth_success = await self.authenticate()
+                if auth_success:
+                    # Fetch instruments from API
+                    await self.fetch_instruments()
+                else:
+                    logger.warning("⚠️ AngelOne authentication failed, falling back to demo instruments")
+                    await self.load_demo_instruments()
+            else:
+                logger.info("📊 AngelOne credentials not configured, using demo instruments")
+                await self.load_demo_instruments()
             
             logger.info("✅ Instrument Manager initialized")
             
@@ -115,16 +133,38 @@ class InstrumentManager:
             totp_value = None
             if self.totp_secret and self.totp_secret != "your_totp_secret":
                 try:
-                    # Validate and prepare TOTP secret
-                    totp_secret = self._prepare_totp_secret(self.totp_secret)
-                    if totp_secret:
-                        totp = pyotp.TOTP(totp_secret)
-                        totp_value = totp.now()
-                    else:
-                        logger.warning("⚠️ Invalid TOTP secret format, proceeding without TOTP")
+                    # Use the same TOTP generation as the broker
+                    totp = pyotp.TOTP(self.totp_secret)
+                    totp_value = totp.now()
+                    logger.info(f"🔐 Generated TOTP for instrument auth: {totp_value}")
                 except Exception as e:
                     logger.warning(f"⚠️ TOTP generation failed: {e}, proceeding without TOTP")
             
+            # Try authentication with current TOTP first
+            auth_success = await self._attempt_authentication(totp_value)
+            
+            if not auth_success and totp_value:
+                logger.warning("🔄 First TOTP attempt failed, trying with previous TOTP...")
+                # Try with previous TOTP window (30 seconds earlier)
+                totp = pyotp.TOTP(self.totp_secret)
+                previous_totp = totp.at(datetime_now().timestamp() - 30)
+                auth_success = await self._attempt_authentication(previous_totp)
+                
+                if not auth_success:
+                    logger.warning("🔄 Trying with next TOTP window...")
+                    # Try with next TOTP window (30 seconds later)
+                    next_totp = totp.at(datetime_now().timestamp() + 30)
+                    auth_success = await self._attempt_authentication(next_totp)
+            
+            return auth_success
+            
+        except Exception as e:
+            logger.error(f"❌ AngelOne authentication error: {e}")
+            return False
+    
+    async def _attempt_authentication(self, totp_value: Optional[str]) -> bool:
+        """Attempt authentication with given TOTP"""
+        try:
             login_data = {
                 "clientcode": self.client_id,
                 "password": self.password,
@@ -142,10 +182,14 @@ class InstrumentManager:
                 "X-PrivateKey": self.api_key
             }
             
+            # Add small delay to avoid rate limiting
+            await asyncio.sleep(1)
+            
             async with self.session.post(
                 f"{self.base_url}/rest/auth/angelbroking/user/v1/loginByPassword",
                 json=login_data,
-                headers=headers
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -154,41 +198,17 @@ class InstrumentManager:
                         logger.info("✅ AngelOne authentication successful")
                         return True
                     else:
-                        logger.error(f"❌ AngelOne auth failed: {data.get('message')}")
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.warning(f"⚠️ AngelOne auth failed: {error_msg}")
+                        return False
                 else:
-                    logger.error(f"❌ AngelOne auth HTTP error: {response.status}")
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ AngelOne authentication error: {e}")
-            return False
-    
-    def _prepare_totp_secret(self, secret: str) -> Optional[str]:
-        """Prepare TOTP secret for pyotp, handling various formats"""
-        try:
-            # If it's already a valid Base32 string, use it directly
-            try:
-                base64.b32decode(secret.upper())
-                return secret.upper()
-            except Exception:
-                pass
-            
-            # For test environments, generate a valid Base32 secret
-            if secret.lower() in ['test_secret', 'test', 'demo']:
-                # Generate a valid Base32 test secret
-                return base64.b32encode(f"TEST{secret.upper()}".ljust(16, '0')[:16].encode()).decode()
-            
-            # Try to encode as Base32 if it's a regular string
-            if len(secret) >= 10:
-                padded_secret = secret.ljust(16, '0')[:16]
-                return base64.b32encode(padded_secret.encode()).decode()
-            
-            return None
+                    response_text = await response.text()
+                    logger.warning(f"⚠️ AngelOne auth HTTP error: {response.status}, {response_text}")
+                    return False
             
         except Exception as e:
-            logger.debug(f"Failed to prepare TOTP secret: {e}")
-            return None
+            logger.warning(f"⚠️ Authentication attempt failed: {e}")
+            return False
     
     async def fetch_instruments(self):
         """Fetch instruments from AngelOne API"""
@@ -198,7 +218,9 @@ class InstrumentManager:
                 await self.load_demo_instruments()
                 return
             
-            # Fetch instrument master
+            # Use the correct instrument endpoint that works
+            instrument_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+            
             headers = {
                 "Authorization": f"Bearer {self.auth_token}",
                 "Content-Type": "application/json",
@@ -208,17 +230,14 @@ class InstrumentManager:
             }
             
             # Download instrument file
-            async with self.session.get(
-                f"{self.base_url}/rest/secure/angelbroking/order/v1/getInstrumentMaster",
-                headers=headers
-            ) as response:
+            async with self.session.get(instrument_url, headers=headers) as response:
                 if response.status == 200:
-                    instruments_data = await response.text()
+                    instruments_data = await response.json()
                     if not instruments_data or len(instruments_data) < 100:
                         logger.warning("⚠️ Empty/invalid response from AngelOne API, using demo instruments")
                         await self.load_demo_instruments()
                     else:
-                        await self.parse_instruments(instruments_data)
+                        await self.parse_json_instruments(instruments_data)
                         logger.info("✅ Instruments fetched from AngelOne")
                 else:
                     logger.error(f"❌ Failed to fetch instruments: {response.status}")
@@ -228,73 +247,67 @@ class InstrumentManager:
             logger.error(f"❌ Error fetching instruments: {e}")
             await self.load_demo_instruments()
     
-    async def parse_instruments(self, instruments_data: str):
-        """Parse instruments data from AngelOne"""
+    async def parse_json_instruments(self, instruments_data: List[dict]):
+        """Parse instruments data from AngelOne JSON format"""
         try:
-            lines = instruments_data.strip().split('\n')
-            if not lines or len(lines) <= 1:
-                logger.warning("⚠️ Empty or invalid instruments data from API, falling back to demo")
+            if not instruments_data:
+                logger.warning("⚠️ Empty instruments data from API, falling back to demo")
                 await self.load_demo_instruments()
                 return
-            
-            # Parse header
-            header = lines[0].split(',')
             
             equity_instruments = []
             derivatives_instruments = []
             
-            for line in lines[1:]:
-                if not line.strip():
-                    continue
-                
-                fields = line.split(',')
-                if len(fields) < len(header):
-                    continue
-                
+            for instrument_data in instruments_data:
                 try:
-                    # Map fields (adjust based on AngelOne format)
-                    instrument_data = dict(zip(header, fields))
-                    
                     symbol = instrument_data.get('symbol', '').strip()
-                    exchange = instrument_data.get('exchange', '').strip()
+                    exchange = instrument_data.get('exch_seg', '').strip()
                     instrument_type = instrument_data.get('instrumenttype', '').strip()
                     
                     if not symbol or not exchange:
                         continue
                     
                     # Filter equity instruments
-                    if self._is_valid_equity(instrument_data):
+                    if self._is_valid_equity_json(instrument_data):
                         instrument = Instrument(
                             symbol=symbol,
                             token=instrument_data.get('token', ''),
                             name=instrument_data.get('name', symbol),
                             exchange=exchange,
                             asset_class=AssetClass.EQUITY,
-                            lot_size=int(instrument_data.get('lotsize', 1)),
+                            lot_size=int(float(instrument_data.get('lotsize', 1))),
                             tick_size=float(instrument_data.get('tick_size', 0.05)),
                             instrument_type=instrument_type
                         )
                         equity_instruments.append(instrument)
                     
                     # Filter derivatives instruments
-                    elif self._is_valid_derivative(instrument_data):
+                    elif self._is_valid_derivative_json(instrument_data):
+                        strike_price = None
+                        try:
+                            strike_str = instrument_data.get('strike', '0')
+                            if strike_str and float(strike_str) > 0:
+                                strike_price = float(strike_str)
+                        except (ValueError, TypeError):
+                            pass
+                        
                         instrument = Instrument(
                             symbol=symbol,
                             token=instrument_data.get('token', ''),
                             name=instrument_data.get('name', symbol),
                             exchange=exchange,
                             asset_class=AssetClass.DERIVATIVES,
-                            lot_size=int(instrument_data.get('lotsize', 1)),
+                            lot_size=int(float(instrument_data.get('lotsize', 1))),
                             tick_size=float(instrument_data.get('tick_size', 0.05)),
                             instrument_type=instrument_type,
-                            expiry=instrument_data.get('expiry'),
-                            strike=float(instrument_data.get('strike', 0)) if instrument_data.get('strike') else None,
-                            option_type=instrument_data.get('optiontype')
+                            expiry=instrument_data.get('expiry') if instrument_data.get('expiry') else None,
+                            strike=strike_price,
+                            option_type=instrument_data.get('optiontype') if instrument_data.get('optiontype') else None
                         )
                         derivatives_instruments.append(instrument)
                 
                 except Exception as e:
-                    logger.debug(f"Error parsing instrument line: {e}")
+                    logger.debug(f"Error parsing instrument: {e}")
                     continue
             
             # Check if we got any instruments
@@ -304,24 +317,30 @@ class InstrumentManager:
                 await self.load_demo_instruments()
                 return
             
+            logger.info(f"📊 Raw instruments parsed: Equity: {len(equity_instruments)}, Derivatives: {len(derivatives_instruments)}")
+            
+            # Apply configurable limits with sorting
+            final_equity = await self._apply_instrument_limits(equity_instruments, AssetClass.EQUITY)
+            final_derivatives = await self._apply_instrument_limits(derivatives_instruments, AssetClass.DERIVATIVES)
+            
             # Store instruments
-            self.instruments[AssetClass.EQUITY] = equity_instruments[:500]  # Limit for performance
-            self.instruments[AssetClass.DERIVATIVES] = derivatives_instruments[:200]
+            self.instruments[AssetClass.EQUITY] = final_equity
+            self.instruments[AssetClass.DERIVATIVES] = final_derivatives
             
-            self.last_updated = datetime.now(timezone.utc)
+            self.last_updated = datetime_now()
             
-            logger.info(f"📊 Parsed instruments: "
+            logger.info(f"📊 Final instruments: "
                        f"Equity: {len(self.instruments[AssetClass.EQUITY])}, "
                        f"Derivatives: {len(self.instruments[AssetClass.DERIVATIVES])}")
         
         except Exception as e:
-            logger.error(f"❌ Error parsing instruments: {e}")
+            logger.error(f"❌ Error parsing JSON instruments: {e}")
             await self.load_demo_instruments()
     
-    def _is_valid_equity(self, instrument_data: dict) -> bool:
-        """Check if instrument is valid equity"""
+    def _is_valid_equity_json(self, instrument_data: dict) -> bool:
+        """Check if instrument is valid equity (JSON format)"""
         try:
-            exchange = instrument_data.get('exchange', '').strip()
+            exchange = instrument_data.get('exch_seg', '').strip()
             instrument_type = instrument_data.get('instrumenttype', '').strip()
             symbol = instrument_data.get('symbol', '').strip()
             
@@ -329,12 +348,14 @@ class InstrumentManager:
             if exchange not in self.equity_filters['exchanges']:
                 return False
             
-            if instrument_type not in self.equity_filters['instrument_types']:
+            # Angel One equity instruments have empty instrument_type and symbol ending with '-EQ'
+            if not (instrument_type == '' and symbol.endswith('-EQ')):
                 return False
             
-            # Exclude patterns
+            # Exclude patterns (check base symbol without -EQ suffix)
+            base_symbol = symbol.replace('-EQ', '')
             for pattern in self.equity_filters['exclude_patterns']:
-                if pattern in symbol:
+                if pattern in base_symbol:
                     return False
             
             return True
@@ -342,10 +363,10 @@ class InstrumentManager:
         except Exception:
             return False
     
-    def _is_valid_derivative(self, instrument_data: dict) -> bool:
-        """Check if instrument is valid derivative"""
+    def _is_valid_derivative_json(self, instrument_data: dict) -> bool:
+        """Check if instrument is valid derivative (JSON format)"""
         try:
-            exchange = instrument_data.get('exchange', '').strip()
+            exchange = instrument_data.get('exch_seg', '').strip()
             instrument_type = instrument_data.get('instrumenttype', '').strip()
             
             if exchange not in self.derivatives_filters['exchanges']:
@@ -412,7 +433,7 @@ class InstrumentManager:
         
         self.instruments[AssetClass.EQUITY] = equity_instruments
         self.instruments[AssetClass.DERIVATIVES] = derivatives_instruments
-        self.last_updated = datetime.now(timezone.utc)
+        self.last_updated = datetime_now()
         
         logger.info(f"✅ Demo instruments loaded: "
                    f"Equity: {len(equity_instruments)}, "
@@ -421,7 +442,7 @@ class InstrumentManager:
     async def update_strategy_symbols(self):
         """Update strategy symbol lists based on their asset class"""
         try:
-            async with self.db_manager.get_session() as db:
+            async with self.db_manager.get_async_session() as db:
                 # Get all active strategies
                 result = await db.execute(
                     select(Strategy).where(Strategy.status == StrategyStatus.ACTIVE)
@@ -513,6 +534,114 @@ class InstrumentManager:
             'total_instruments': sum(len(instruments) for instruments in self.instruments.values()),
             'auth_status': 'authenticated' if self.auth_token else 'demo_mode'
         }
+
+    def _are_credentials_configured(self) -> bool:
+        """Check if AngelOne credentials are properly configured"""
+        # Check if all required fields are set and not placeholder values
+        if not self.api_key or self.api_key.startswith('your_') or len(self.api_key) < 5:
+            return False
+            
+        if not self.client_id or self.client_id.startswith('your_') or len(self.client_id) < 5:
+            return False
+            
+        # Password can be shorter (like numeric PINs)
+        if not self.password or self.password.startswith('your_'):
+            return False
+        
+        return True
+
+    async def _apply_instrument_limits(self, instruments: List[Instrument], asset_class: AssetClass) -> List[Instrument]:
+        """Apply configurable limits to instruments with smart sorting"""
+        try:
+            if not instruments:
+                return []
+            
+            # If load_all_instruments is True, return all (up to max_total_instruments)
+            if self.load_all_instruments:
+                max_limit = self.max_total_instruments
+                logger.info(f"📊 Loading ALL {asset_class.value} instruments (limit: {max_limit})")
+            else:
+                # Use specific limits for each asset class
+                if asset_class == AssetClass.EQUITY:
+                    max_limit = self.max_equity_instruments
+                elif asset_class == AssetClass.DERIVATIVES:
+                    max_limit = self.max_derivatives_instruments
+                else:
+                    max_limit = 1000  # Default fallback
+                
+                logger.info(f"📊 Applying {asset_class.value} limit: {max_limit}")
+            
+            # Sort instruments by quality/priority
+            sorted_instruments = await self._sort_instruments_by_quality(instruments, asset_class)
+            
+            # Apply limit
+            final_instruments = sorted_instruments[:max_limit]
+            
+            logger.info(f"📊 {asset_class.value} instruments: {len(instruments)} -> {len(final_instruments)}")
+            return final_instruments
+            
+        except Exception as e:
+            logger.error(f"❌ Error applying limits for {asset_class.value}: {e}")
+            # Fallback to original logic
+            if asset_class == AssetClass.EQUITY:
+                return instruments[:self.max_equity_instruments]
+            else:
+                return instruments[:self.max_derivatives_instruments]
+    
+    async def _sort_instruments_by_quality(self, instruments: List[Instrument], asset_class: AssetClass) -> List[Instrument]:
+        """Sort instruments by quality/liquidity metrics"""
+        try:
+            if asset_class == AssetClass.EQUITY:
+                # Sort equity by symbol alphabetically for now (could add market cap, volume etc.)
+                # Prioritize major stocks by putting known major stocks first
+                major_stocks = [
+                    "RELIANCE-EQ", "TCS-EQ", "INFY-EQ", "HDFCBANK-EQ", "ICICIBANK-EQ", 
+                    "HINDUNILVR-EQ", "LT-EQ", "SBIN-EQ", "BHARTIARTL-EQ", "ASIANPAINT-EQ",
+                    "MARUTI-EQ", "BAJFINANCE-EQ", "HCLTECH-EQ", "WIPRO-EQ", "ULTRACEMCO-EQ",
+                    "NESTLEIND-EQ", "TATAMOTORS-EQ", "TITAN-EQ", "POWERGRID-EQ", "NTPC-EQ",
+                    "COALINDIA-EQ", "TECHM-EQ", "DRREDDY-EQ", "SUNPHARMA-EQ", "INDUSINDBK-EQ"
+                ]
+                
+                # Separate major stocks and others
+                major_instruments = []
+                other_instruments = []
+                
+                for instrument in instruments:
+                    if instrument.symbol in major_stocks:
+                        major_instruments.append(instrument)
+                    else:
+                        other_instruments.append(instrument)
+                
+                # Sort major stocks by order in major_stocks list
+                major_instruments.sort(key=lambda x: major_stocks.index(x.symbol) if x.symbol in major_stocks else 999)
+                
+                # Sort others alphabetically
+                other_instruments.sort(key=lambda x: x.symbol)
+                
+                # Combine: major stocks first, then others
+                return major_instruments + other_instruments
+                
+            elif asset_class == AssetClass.DERIVATIVES:
+                # Sort derivatives by type priority: Index futures > Stock futures > Options
+                def derivative_priority(instrument):
+                    if "NIFTY" in instrument.symbol and instrument.instrument_type == "FUTIDX":
+                        return 0  # Highest priority: Index futures
+                    elif instrument.instrument_type == "FUTSTK":
+                        return 1  # Stock futures
+                    elif instrument.instrument_type in ["OPTIDX", "OPTSTK"]:
+                        return 2  # Options
+                    else:
+                        return 3  # Others
+                
+                return sorted(instruments, key=derivative_priority)
+            
+            else:
+                # Default: alphabetical sort
+                return sorted(instruments, key=lambda x: x.symbol)
+                
+        except Exception as e:
+            logger.error(f"❌ Error sorting instruments: {e}")
+            return instruments  # Return unsorted on error
 
 # Global instrument manager instance
 instrument_manager: Optional[InstrumentManager] = None

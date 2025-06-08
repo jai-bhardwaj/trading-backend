@@ -2,7 +2,7 @@
 Strategy Manager for Dynamic Strategy Execution
 
 This module provides a comprehensive strategy management system that uses
-the StrategyRegistry to dynamically load and execute trading strategies.
+the AutomaticStrategyRegistry to dynamically load and execute trading strategies.
 """
 
 import logging
@@ -12,7 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass
-from .registry import StrategyRegistry
+from .registry import AutomaticStrategyRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class StrategyManager:
     Manages multiple trading strategies and their execution
     
     Features:
-    - Dynamic strategy loading using StrategyRegistry
+    - Dynamic strategy loading using AutomaticStrategyRegistry
     - Concurrent strategy execution
     - Signal aggregation and filtering
     - Performance tracking
@@ -39,12 +39,51 @@ class StrategyManager:
         logger.info(f"StrategyManager initialized with {max_workers} workers")
     
     def get_available_strategies(self) -> Dict[str, Dict[str, Any]]:
-        """Get all available strategies from registry"""
-        return StrategyRegistry.get_strategy_info()
+        """Get all available strategies from registry with detailed metadata"""
+        try:
+            strategies = AutomaticStrategyRegistry.list_strategies()
+            metadata_dict = AutomaticStrategyRegistry.get_all_metadata()
+            
+            available_strategies = {}
+            
+            for strategy_name in strategies:
+                metadata = metadata_dict.get(strategy_name)
+                if metadata:
+                    available_strategies[strategy_name] = {
+                        'class_name': metadata.class_name,
+                        'asset_class': metadata.asset_class.value if metadata.asset_class else None,
+                        'description': metadata.description,
+                        'version': metadata.version,
+                        'author': metadata.author,
+                        'module_path': metadata.module_path,
+                        'parameters': metadata.parameters,
+                        'is_active': metadata.is_active,
+                        'last_modified': metadata.last_modified.isoformat()
+                    }
+                else:
+                    # Fallback for strategies without metadata
+                    strategy_class = AutomaticStrategyRegistry.get_strategy_class(strategy_name)
+                    available_strategies[strategy_name] = {
+                        'class_name': strategy_class.__name__ if strategy_class else 'Unknown',
+                        'asset_class': None,
+                        'description': 'No metadata available',
+                        'version': '1.0.0',
+                        'author': 'Unknown',
+                        'module_path': strategy_class.__module__ if strategy_class else 'Unknown',
+                        'parameters': {},
+                        'is_active': True,
+                        'last_modified': datetime.now().isoformat()
+                    }
+            
+            return available_strategies
+            
+        except Exception as e:
+            logger.error(f"Error getting available strategies: {e}")
+            return {}
     
     def get_strategies_by_asset_class(self, asset_class: AssetClass) -> List[str]:
         """Get strategies available for specific asset class"""
-        return StrategyRegistry.list_strategies_by_asset_class(asset_class)
+        return AutomaticStrategyRegistry.list_strategies_by_asset_class(asset_class)
     
     def create_strategy(self, strategy_name: str, config: StrategyConfig) -> bool:
         """
@@ -65,7 +104,7 @@ class StrategyManager:
                 return False
             
             # Create strategy instance using registry
-            strategy = StrategyRegistry.create_strategy(strategy_name, config)
+            strategy = AutomaticStrategyRegistry.create_strategy(strategy_name, config)
             if not strategy:
                 logger.error(f"Failed to create strategy {strategy_name}")
                 return False

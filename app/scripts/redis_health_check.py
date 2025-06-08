@@ -1,6 +1,14 @@
 import os
+import logging
 import redis
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -9,10 +17,10 @@ try:
     r = redis.from_url(redis_url)
     pong = r.ping()
     if pong:
-        print("✅ Redis connection successful.")
+        logger.info("✅ Redis connection successful.")
     else:
-        print("❌ Redis connection failed (no PONG).")
+        logger.error("❌ Redis connection failed (no PONG).")
         exit(1)
 except Exception as e:
-    print(f"❌ Redis connection failed: {e}")
+    logger.error(f"❌ Redis connection failed: {e}")
     exit(1) 

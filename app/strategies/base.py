@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, List, Union
 from enum import Enum
 import logging
 from datetime import datetime
+from app.utils.timezone_utils import ist_utcnow as datetime_now
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,18 @@ class StrategySignal:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=datetime_now)
+
+@dataclass
+class StrategyResult:
+    """Result of strategy execution"""
+    success: bool
+    message: str
+    orders_placed: int
+    pnl: float
+    orders: List[Any] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime_now)
 
 @dataclass
 class StrategyConfig:

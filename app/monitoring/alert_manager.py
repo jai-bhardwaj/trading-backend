@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.database import DatabaseManager
 from app.models.base import Strategy as StrategyModel, User
 from app.monitoring.strategy_monitor import MonitoringMetrics, StrategyHealth
+from app.utils.timezone_utils import ist_utcnow as datetime_now
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ class AlertManager:
             # Evaluate rule condition
             if rule.evaluate(metrics):
                 await self._trigger_alert(rule, strategy_id, metrics)
-                self._last_alert_times[cooldown_key] = datetime.utcnow()
+                self._last_alert_times[cooldown_key] = datetime_now()
     
     def _is_in_cooldown(self, cooldown_key: str, cooldown_minutes: int) -> bool:
         """Check if alert is in cooldown period"""
@@ -291,12 +292,12 @@ class AlertManager:
         last_alert_time = self._last_alert_times[cooldown_key]
         cooldown_period = timedelta(minutes=cooldown_minutes)
         
-        return datetime.utcnow() - last_alert_time < cooldown_period
+        return datetime_now() - last_alert_time < cooldown_period
     
     async def _trigger_alert(self, rule: AlertRule, strategy_id: str, metrics: MonitoringMetrics):
         """Trigger an alert"""
         # Generate alert ID
-        alert_id = f"{strategy_id}_{rule.id}_{int(datetime.utcnow().timestamp())}"
+        alert_id = f"{strategy_id}_{rule.id}_{int(datetime_now().timestamp())}"
         
         # Get strategy info
         db_manager = DatabaseManager()
@@ -318,8 +319,8 @@ class AlertManager:
                     title=self._generate_alert_title(rule, metrics),
                     message=self._generate_alert_message(rule, metrics),
                     data=self._generate_alert_data(rule, metrics),
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
+                    created_at=datetime_now(),
+                    updated_at=datetime_now()
                 )
                 
                 # Store alert
@@ -438,7 +439,7 @@ class AlertManager:
     
     async def _process_escalations(self):
         """Process alert escalations"""
-        current_time = datetime.utcnow()
+        current_time = datetime_now()
         
         for alert in self._active_alerts.values():
             if alert.status != AlertStatus.ACTIVE:
@@ -472,7 +473,7 @@ class AlertManager:
     
     async def _cleanup_old_alerts(self):
         """Clean up old resolved alerts"""
-        cutoff_time = datetime.utcnow() - timedelta(days=7)  # Keep alerts for 7 days
+        cutoff_time = datetime_now() - timedelta(days=7)  # Keep alerts for 7 days
         
         # Remove old alerts from history
         self._alert_history = [
@@ -495,9 +496,9 @@ class AlertManager:
         if alert_id in self._active_alerts:
             alert = self._active_alerts[alert_id]
             alert.status = AlertStatus.ACKNOWLEDGED
-            alert.acknowledged_at = datetime.utcnow()
+            alert.acknowledged_at = datetime_now()
             alert.acknowledged_by = acknowledged_by
-            alert.updated_at = datetime.utcnow()
+            alert.updated_at = datetime_now()
             
             logger.info(f"Alert acknowledged: {alert.title} by {acknowledged_by}")
             return True
@@ -509,8 +510,8 @@ class AlertManager:
         if alert_id in self._active_alerts:
             alert = self._active_alerts[alert_id]
             alert.status = AlertStatus.RESOLVED
-            alert.resolved_at = datetime.utcnow()
-            alert.updated_at = datetime.utcnow()
+            alert.resolved_at = datetime_now()
+            alert.updated_at = datetime_now()
             
             logger.info(f"Alert resolved: {alert.title}")
             return True
@@ -522,7 +523,7 @@ class AlertManager:
         if alert_id in self._active_alerts:
             alert = self._active_alerts[alert_id]
             alert.status = AlertStatus.SUPPRESSED
-            alert.updated_at = datetime.utcnow()
+            alert.updated_at = datetime_now()
             
             logger.info(f"Alert suppressed: {alert.title}")
             return True
