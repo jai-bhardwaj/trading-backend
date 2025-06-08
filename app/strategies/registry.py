@@ -70,6 +70,12 @@ class AutomaticStrategyRegistry:
             return
         
         try:
+            # Check if strategies are already manually registered
+            manually_registered_count = len(cls._strategies)
+            if manually_registered_count > 0:
+                logger.info(f"📝 Found {manually_registered_count} manually registered strategies")
+                auto_discover = False  # Disable auto-discovery to preserve manual registrations
+            
             # Set up discovery paths
             if base_path is None:
                 base_path = Path(__file__).parent
@@ -105,6 +111,12 @@ class AutomaticStrategyRegistry:
         Args:
             force_reload: Force reload even if files haven't changed
         """
+        # Skip discovery if manually registered strategies exist
+        if len(cls._strategies) > 0 and not force_reload:
+            logger.info(f"📝 Skipping discovery - {len(cls._strategies)} manually registered strategies found")
+            cls._log_registry_summary()
+            return
+        
         discovered_count = 0
         
         try:
@@ -245,6 +257,11 @@ class AutomaticStrategyRegistry:
         if strategy_name.endswith('Strategy'):
             strategy_name = strategy_name[:-8]  # Remove 'Strategy' suffix
         
+        # Convert CamelCase to snake_case for consistency
+        import re
+        strategy_name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', strategy_name)
+        strategy_name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', strategy_name).lower()
+        
         return strategy_name
     
     @classmethod
@@ -375,11 +392,10 @@ class AutomaticStrategyRegistry:
                 strategy_class.STRATEGY_NAME = strategy_name
                 strategy_class.ASSET_CLASS = asset_class
                 
-                # If registry is initialized, register immediately
-                if cls._initialized:
-                    file_path = inspect.getfile(strategy_class)
-                    module_path = strategy_class.__module__
-                    cls._register_strategy_class(strategy_name, strategy_class, file_path, module_path)
+                # Always register immediately (don't wait for initialization)
+                file_path = inspect.getfile(strategy_class)
+                module_path = strategy_class.__module__
+                cls._register_strategy_class(strategy_name, strategy_class, file_path, module_path)
                 
                 logger.info(f"✓ Manually registered strategy: {strategy_name}")
                 return strategy_class

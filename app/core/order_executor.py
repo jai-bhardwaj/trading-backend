@@ -20,7 +20,7 @@ import json
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, select
 
-from app.database import DatabaseManager
+from app.database import DatabaseManager, get_database_manager
 from app.models.base import (
     Order, OrderStatus, OrderSide, OrderType, ProductType,
     BrokerConfig, User, Position, Balance, Trade
@@ -153,18 +153,20 @@ class OrderExecutor:
             status=ExecutionStatus.PENDING
         )
         
-        # Use provided db_manager or create new one
+        # Use provided db_manager or get global instance
         db_manager = self.db_manager
         if not db_manager:
-            from app.database import DatabaseManager
-            db_manager = DatabaseManager()
-            try:
-                db_manager.initialize()
-            except Exception as e:
-                logger.error(f"Database not initialized: {e}")
-                result.status = ExecutionStatus.FAILED
-                result.message = f"Database not initialized: {str(e)}"
-                return result
+            from app.database import get_database_manager
+            db_manager = get_database_manager()
+            if not db_manager._initialized:
+                logger.warning("Using uninitialized database manager - attempting to initialize")
+                try:
+                    await db_manager.initialize()
+                except Exception as e:
+                    logger.error(f"Database not initialized: {e}")
+                    result.status = ExecutionStatus.FAILED
+                    result.message = f"Database not initialized: {str(e)}"
+                    return result
         
         try:
             async with db_manager.get_async_session() as db:
@@ -542,7 +544,16 @@ class OrderExecutor:
         """Cancel an existing order"""
         result = ExecutionResult(success=False, status=ExecutionStatus.PENDING)
         
-        db_manager = DatabaseManager()
+        db_manager = self.db_manager or get_database_manager()
+        if not db_manager._initialized:
+            logger.warning("Database manager not initialized in cancel_order") 
+            try:
+                await db_manager.initialize()
+            except Exception as e:
+                result.status = ExecutionStatus.FAILED
+                result.message = f"Database initialization failed: {str(e)}"
+                return result
+        
         try:
             async with db_manager.get_async_session() as db:
                 order = db.query(Order).filter(Order.id == order_id).first()

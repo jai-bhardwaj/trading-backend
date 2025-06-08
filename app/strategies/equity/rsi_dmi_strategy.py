@@ -7,10 +7,12 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
-from app.strategies.base_strategy import BaseStrategy
+from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..registry import AutomaticStrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+@AutomaticStrategyRegistry.register("rsi_dmi_equity", AssetClass.EQUITY)
 class RSIDMIStrategy(BaseStrategy):
     """
     RSI DMI Strategy for Equity

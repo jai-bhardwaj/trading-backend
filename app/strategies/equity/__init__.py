@@ -2,24 +2,18 @@
 Equity Trading Strategies
 
 This module contains strategy implementations specifically designed for equity markets.
-All strategies have been migrated to work with the new cleaned schema and enhanced
-strategy execution system using the updated BaseStrategy class.
+All strategies work with the AutomaticStrategyRegistry for automatic discovery.
 """
 
-from .test_strategy_2min import TestStrategy2Min
-from .example_strategy import SimpleMovingAverageStrategy, RSIMeanReversionStrategy
 from .swing_momentum_strategy import SwingMomentumGain4Strategy
 from .rsi_dmi_strategy import RSIDMIStrategy
 from .rsi_dmi_intraday_delayed import RSIDMIIntradayDelayedStrategy
 from .btst_momentum_strategy import BTSTMomentumGain4Strategy
+from .test_strategy import TestStrategy
 
 __all__ = [
-    # Test strategies
-    'TestStrategy2Min',
-    
-    # Example strategies
-    'SimpleMovingAverageStrategy',
-    'RSIMeanReversionStrategy',
+    # Test strategy
+    'TestStrategy',
     
     # Production strategies
     'SwingMomentumGain4Strategy',
@@ -30,10 +24,8 @@ __all__ = [
 
 # Strategy registry for easy access
 EQUITY_STRATEGIES = {
-    # Test and example strategies
-    'test_strategy_2min': TestStrategy2Min,
-    'simple_moving_average': SimpleMovingAverageStrategy,
-    'rsi_mean_reversion': RSIMeanReversionStrategy,
+    # Test strategy
+    'test_strategy': TestStrategy,
     
     # Production strategies
     'swing_momentum_gain_4': SwingMomentumGain4Strategy,
@@ -53,26 +45,12 @@ def list_available_strategies():
 def get_strategy_info():
     """Get information about all available strategies."""
     return {
-        'test_strategy_2min': {
-            'name': 'Test Strategy 2 Min',
-            'description': 'Test strategy that places orders every 2 minutes for system testing',
-            'type': 'TEST',
-            'timeframe': '2M',
+        'test_strategy': {
+            'name': 'Test Strategy',
+            'description': 'Places orders at configurable intervals for system testing',
+            'type': 'TESTING',
+            'timeframe': 'CONFIGURABLE',
             'risk_level': 'LOW'
-        },
-        'simple_moving_average': {
-            'name': 'Simple Moving Average Crossover',
-            'description': 'Buy when short MA crosses above long MA, sell when it crosses below',
-            'type': 'TREND_FOLLOWING',
-            'timeframe': 'INTRADAY',
-            'risk_level': 'MEDIUM'
-        },
-        'rsi_mean_reversion': {
-            'name': 'RSI Mean Reversion',
-            'description': 'Buy when RSI is oversold, sell when overbought',
-            'type': 'MEAN_REVERSION',
-            'timeframe': 'INTRADAY',
-            'risk_level': 'MEDIUM'
         },
         'swing_momentum_gain_4': {
             'name': 'Swing Momentum Gain 4%',
