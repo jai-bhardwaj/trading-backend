@@ -3,6 +3,7 @@ Enhanced Database Manager
 Centralized database connection and session management with improved error handling
 """
 
+import asyncio
 import logging
 import redis.asyncio as redis
 from contextlib import asynccontextmanager
@@ -273,6 +274,7 @@ class DatabaseManager:
             raise
             
         except Exception as e:
+            # Handle session cleanup
             if session:
                 try:
                     await session.rollback()
@@ -280,7 +282,14 @@ class DatabaseManager:
                 except Exception as rollback_error:
                     logger.error(f"❌ Error during rollback: {rollback_error}")
             
-            logger.error(f"❌ Unexpected database session error: {e}")
+            # Check if this is a connection/event loop issue
+            error_str = str(e)
+            if ("attached to a different loop" in error_str or 
+                "connection slots are reserved" in error_str or
+                "unknown protocol state" in error_str):
+                logger.warning(f"🔄 Database connection/loop issue: {e}")
+            else:
+                logger.error(f"❌ Unexpected database session error: {e}")
             raise
             
         finally:
