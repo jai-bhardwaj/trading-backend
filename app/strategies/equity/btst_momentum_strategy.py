@@ -7,8 +7,10 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time, timedelta
-from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..base_strategy import BaseStrategy
 from ..registry import AutomaticStrategyRegistry
+from app.models.base import AssetClass
+from app.utils.timezone_utils import ist_now as datetime_now
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,40 @@ class BTSTMomentumGain4Strategy(BaseStrategy):
         
         logger.info(f"Initialized BTSTMomentumGain4Strategy with {len(symbols)} symbols")
     
+    async def process_market_data(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process market data and generate signals (required interface method)"""
+        try:
+            symbol = market_data.get('symbol', 'UNKNOWN')
+            current_price = market_data.get('ltp', market_data.get('close', 0))
+            
+            # Update day open price
+            await self._update_day_open_price(symbol, market_data)
+            
+            # Check momentum from day's open
+            day_open = self.day_open_prices.get(symbol)
+            if day_open and day_open > 0:
+                momentum_pct = ((current_price - day_open) / day_open) * 100
+                
+                # Simulate MACD and Stochastic signals
+                macd_signal = 1 if momentum_pct > 2 else 0
+                stoch_signal = 1 if momentum_pct > 2 else 0
+                
+                if (macd_signal == 1 and stoch_signal == 1 and 
+                    momentum_pct >= self.momentum_percentage):
+                    
+                    return {
+                        'action': 'BUY',
+                        'symbol': symbol,
+                        'quantity': 15,
+                        'reason': f'BTST: MACD+Stoch signals with {momentum_pct:.2f}% momentum'
+                    }
+            
+            return None
+                
+        except Exception as e:
+            logger.error(f"Error processing market data for {symbol}: {e}")
+            return None
+
     async def on_market_data(self, symbol: str, data: Dict[str, Any]):
         """Process market data and update day open prices"""
         try:
@@ -68,7 +104,7 @@ class BTSTMomentumGain4Strategy(BaseStrategy):
     async def generate_signals(self) -> List[Dict[str, Any]]:
         """Generate BTST momentum signals"""
         signals = []
-        current_time = datetime.now()
+        current_time = datetime_now()
         
         # Check trading hours
         if not (self.market_start <= current_time.time() <= self.market_end):
@@ -134,7 +170,7 @@ class BTSTMomentumGain4Strategy(BaseStrategy):
     
     async def _update_day_open_price(self, symbol: str, data: Dict[str, Any]):
         """Update the day's opening price for momentum calculation"""
-        current_date = datetime.now().date()
+        current_date = datetime_now().date()
         
         # For simplicity, we'll use the first price we see each day as the open
         if symbol not in self.day_open_prices:
@@ -182,7 +218,7 @@ class BTSTMomentumGain4Strategy(BaseStrategy):
             # Track entry details for BTST trading
             self.entry_prices[order.symbol] = order.average_price
             if order.symbol not in self.entry_times:
-                self.entry_times[order.symbol] = datetime.now()
+                self.entry_times[order.symbol] = datetime_now()
             
             logger.info(f"BTST position opened: {order.symbol} @ ₹{order.average_price}")
         
@@ -202,6 +238,6 @@ class BTSTMomentumGain4Strategy(BaseStrategy):
         days_held = 0
         if position.symbol in self.entry_times:
             entry_time = self.entry_times[position.symbol]
-            days_held = (datetime.now().date() - entry_time.date()).days
+            days_held = (datetime_now().date() - entry_time.date()).days
         
         logger.info(f"BTST position closed: {position.symbol} with P&L: ₹{pnl} (held {days_held} days)") 
