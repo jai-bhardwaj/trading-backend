@@ -26,7 +26,7 @@ from app.models.base import (
     BrokerConfig, User, Position, Balance, Trade
 )
 from app.core.risk_manager import risk_manager, RiskCheckContext, RiskCheckResult, RiskViolation
-from app.strategies.base import StrategySignal
+from app.strategies.signals import StrategySignal
 from app.brokers.angelone_new import AngelOneBroker
 from app.core.interfaces import Order as OrderInterface
 from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
@@ -130,12 +130,22 @@ class OrderExecutor:
     6. Audit logging
     """
     
+    # Class-level broker singleton
+    _angel_one_broker = None
+    _broker_last_auth = None
+    _broker_lock = None
+    
     def __init__(self, config: Optional[ExecutionConfig] = None, db_manager=None):
         self.config = config or ExecutionConfig()
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}  # Per broker
         self.execution_history: List[ExecutionResult] = []
         self.broker_instances: Dict[str, Dict[str, Any]] = {}
         self.db_manager = db_manager
+        
+        # Initialize broker lock if not exists
+        if OrderExecutor._broker_lock is None:
+            import asyncio
+            OrderExecutor._broker_lock = asyncio.Lock()
         
     async def execute_order(self, order_id: str) -> ExecutionResult:
         """
@@ -184,17 +194,8 @@ class OrderExecutor:
                 if self.config.enable_audit_logging:
                     self._log_execution_event(order, "EXECUTION_STARTED", {})
                 
-                # For demo purposes, simulate successful order execution
-                # In production, this would include risk checks and broker integration
-                result.success = True
-                result.status = ExecutionStatus.BROKER_ACCEPTED
-                result.broker_order_id = f"DEMO_{order_id[:8]}"
-                result.message = "Demo order executed successfully (paper trading)"
-                
-                # Update order status
-                order.status = OrderStatus.COMPLETE
-                order.executed_at = datetime_now()
-                await db.commit()
+                # Execute with proper risk checks and broker integration
+                result = await self._execute_with_retries(db, order)
                 
         except Exception as e:
             logger.error(f"Critical error in order execution: {e}")
@@ -223,15 +224,17 @@ class OrderExecutor:
         
         return result
     
-    async def _perform_risk_checks(self, db: Session, order: Order) -> Tuple[RiskCheckResult, List[RiskViolation], Dict[str, Any]]:
+    async def _perform_risk_checks(self, db, order: Order) -> Tuple[RiskCheckResult, List[RiskViolation], Dict[str, Any]]:
         """Perform comprehensive risk checks"""
         try:
             # Get user balance
-            balance = db.query(Balance).filter(Balance.user_id == order.user_id).first()
+            balance_result = await db.execute(select(Balance).where(Balance.user_id == order.user_id))
+            balance = balance_result.scalar_one_or_none()
             current_balance = balance.total_balance if balance else 0
             
             # Get current positions
-            positions = db.query(Position).filter(Position.user_id == order.user_id).all()
+            positions_result = await db.execute(select(Position).where(Position.user_id == order.user_id))
+            positions = positions_result.scalars().all()
             current_positions = [
                 {
                     'symbol': pos.symbol,
@@ -243,12 +246,15 @@ class OrderExecutor:
             ]
             
             # Get recent orders for rate limiting
-            recent_orders = db.query(Order).filter(
-                and_(
-                    Order.user_id == order.user_id,
-                    Order.created_at > datetime_now() - timedelta(hours=1)
+            recent_orders_result = await db.execute(
+                select(Order).where(
+                    and_(
+                        Order.user_id == order.user_id,
+                        Order.created_at > datetime_now() - timedelta(hours=1)
+                    )
                 )
-            ).all()
+            )
+            recent_orders = recent_orders_result.scalars().all()
             
             # Create risk check context
             context = RiskCheckContext(
@@ -276,7 +282,7 @@ class OrderExecutor:
             )
             return RiskCheckResult.REJECTED, [violation], {}
     
-    async def _execute_with_retries(self, db: Session, order: Order) -> ExecutionResult:
+    async def _execute_with_retries(self, db, order: Order) -> ExecutionResult:
         """Execute order with retry logic"""
         result = ExecutionResult(success=False, status=ExecutionStatus.PENDING)
         
@@ -379,51 +385,28 @@ class OrderExecutor:
         
         return error_code not in non_retryable
     
-    async def _get_broker_instance(self, db: Session, user_id: str) -> Optional[Any]:
-        """Get or create broker instance for user"""
-        if user_id not in self.broker_instances:
-            self.broker_instances[user_id] = {}
-        
-        # Get active broker config
-        broker_config = db.query(BrokerConfig).filter(
-            and_(
-                BrokerConfig.user_id == user_id,
-                BrokerConfig.is_active == True
-            )
-        ).first()
-        
-        if not broker_config:
+    async def _get_broker_instance(self, db, user_id: str) -> Optional[Any]:
+        """Get simple Angel One broker - FINAL FIX"""
+        try:
+            from fix_angel_one_final import get_global_angel_one
+            broker = await get_global_angel_one()
+            if broker:
+                logger.info(f"✅ Using simple Angel One broker for user {user_id}")
+            return broker
+        except Exception as e:
+            logger.error(f"❌ Failed to get Angel One broker: {e}")
             return None
-        
-        broker_name = broker_config.broker_name.value.lower()
-        
-        if broker_name not in self.broker_instances[user_id]:
-            if broker_name == "angel_one":
-                broker = AngelOneBroker()
-                
-                # Initialize broker
-                config = {
-                    "api_key": broker_config.api_key,
-                    "client_id": broker_config.client_id,
-                    "password": broker_config.password,
-                    "totp_secret": broker_config.totp_secret,
-                }
-                
-                await broker.initialize(user_id, config)
-                self.broker_instances[user_id][broker_name] = broker
-            else:
-                raise ValueError(f"Unsupported broker: {broker_name}")
-        
-        return self.broker_instances[user_id][broker_name]
-    
-    async def _get_broker_name(self, db: Session, user_id: str) -> str:
+    async def _get_broker_name(self, db, user_id: str) -> str:
         """Get broker name for user"""
-        broker_config = db.query(BrokerConfig).filter(
-            and_(
-                BrokerConfig.user_id == user_id,
-                BrokerConfig.is_active == True
+        broker_config_result = await db.execute(
+            select(BrokerConfig).where(
+                and_(
+                    BrokerConfig.user_id == user_id,
+                    BrokerConfig.is_active == True
+                )
             )
-        ).first()
+        )
+        broker_config = broker_config_result.scalar_one_or_none()
         
         return broker_config.broker_name.value.lower() if broker_config else "unknown"
     
@@ -452,7 +435,7 @@ class OrderExecutor:
         
         self.circuit_breakers[broker_name].record_failure()
     
-    async def _update_order_status(self, db: Session, order: Order, status: OrderStatus, 
+    async def _update_order_status(self, db, order: Order, status: OrderStatus, 
                                  message: str, broker_order_id: Optional[str] = None):
         """Update order status in database"""
         try:
@@ -463,13 +446,13 @@ class OrderExecutor:
             if broker_order_id:
                 order.broker_order_id = broker_order_id
             
-            db.commit()
+            await db.commit()
             
         except Exception as e:
             logger.error(f"Error updating order status: {e}")
-            db.rollback()
+            await db.rollback()
     
-    async def _post_execution_updates(self, db: Session, order: Order, result: ExecutionResult):
+    async def _post_execution_updates(self, db, order: Order, result: ExecutionResult):
         """Perform post-execution updates"""
         try:
             # Create trade record if order was filled
@@ -487,7 +470,7 @@ class OrderExecutor:
                     pnl=0.0  # Will be calculated later
                 )
                 db.add(trade)
-                db.commit()
+                await db.commit()
             
         except Exception as e:
             logger.error(f"Error in post-execution updates: {e}")
@@ -556,7 +539,8 @@ class OrderExecutor:
         
         try:
             async with db_manager.get_async_session() as db:
-                order = db.query(Order).filter(Order.id == order_id).first()
+                order_result = await db.execute(select(Order).where(Order.id == order_id))
+                order = order_result.scalar_one_or_none()
                 if not order:
                     result.message = f"Order {order_id} not found"
                     result.status = ExecutionStatus.FAILED

@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 
 from app.models.base import Order, Position, Balance, Trade, User, Strategy as StrategyModel
-from app.strategies.base import StrategySignal, AssetClass
+from app.strategies.signals import StrategySignal
+from app.models.base import AssetClass
 from app.utils.timezone_utils import ist_utcnow as datetime_now  # IST replacement for datetime.utcnow
 
 logger = logging.getLogger(__name__)

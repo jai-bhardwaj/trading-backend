@@ -7,11 +7,9 @@ Coordinates multiple Redis queues and workers for optimal order processing perfo
 import asyncio
 import logging
 import signal
-import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
 
 from .redis_client import get_redis_connection, redis_client
 from .order_queue import OrderQueue, OrderProcessor, QueuedOrder
@@ -52,52 +50,50 @@ class QueueManager:
         self.order_queue = OrderQueue(self.queue_config.queue_name)
         self.priority_queue = PriorityOrderQueue(self.queue_config.priority_queue_name)
         
-        # Worker management
+        # Worker management (async tasks, no threads!)
         self.workers: List[OrderProcessor] = []
-        self.worker_threads: List[threading.Thread] = []
-        self.executor = ThreadPoolExecutor(max_workers=self.worker_config.worker_count)
+        self.background_tasks: List[asyncio.Task] = []
         
         # Control flags
         self.is_running = False
-        self.shutdown_event = threading.Event()
+        self.shutdown_event = asyncio.Event()
         
         # Statistics
         self.start_time: Optional[datetime] = None
         self.total_processed = 0
         self.total_errors = 0
         
-        # Background tasks
-        self.background_tasks: List[asyncio.Task] = []
+        # Background tasks (initialized above in worker management)
         
         # Setup signal handlers
         self._setup_signal_handlers()
     
-    def start(self):
-        """Start the queue manager and all workers"""
+    async def start(self):
+        """Start the queue manager and all workers as async tasks"""
         if self.is_running:
             logger.warning("⚠️ Queue manager is already running")
-            return
+            return False
         
         self.is_running = True
         self.start_time = datetime.utcnow()
         
-        logger.info(f"🚀 Starting Queue Manager with {self.worker_config.worker_count} workers")
+        logger.info(f"🚀 Starting Queue Manager with {self.worker_config.worker_count} async workers")
         
         # Check Redis connection
         if not redis_client.is_connected():
             logger.error("❌ Redis connection not available")
             return False
         
-        # Start workers
-        self._start_workers()
+        # Start async workers (no threads!)
+        await self._start_async_workers()
         
         # Start background tasks
-        self._start_background_tasks()
+        await self._start_background_tasks()
         
         logger.info("✅ Queue Manager started successfully")
         return True
     
-    def stop(self):
+    async def stop(self):
         """Stop the queue manager and all workers"""
         if not self.is_running:
             logger.warning("⚠️ Queue manager is not running")
@@ -110,13 +106,10 @@ class QueueManager:
         self.is_running = False
         
         # Stop all workers
-        self._stop_workers()
+        await self._stop_workers()
         
-        # Cancel background tasks
+        # Cancel background tasks (already done in _stop_workers, but kept for clarity)
         self._stop_background_tasks()
-        
-        # Shutdown executor
-        self.executor.shutdown(wait=True)
         
         logger.info("🏁 Queue Manager stopped")
     
@@ -150,72 +143,60 @@ class QueueManager:
             logger.error(f"❌ Failed to enqueue order {order.order_id}: {e}")
             return False
     
-    def _start_workers(self):
-        """Start all order processing workers"""
+    async def _start_async_workers(self):
+        """Start all order processing workers as async tasks (no threads!)"""
+        self.background_tasks = []
+        
         for i in range(self.worker_config.worker_count):
             worker_id = f"worker_{i+1}"
             
-            # Create worker
+            # Create worker (no db_manager - workers only use Redis!)
             worker = OrderProcessor(
                 queue_name=self.queue_config.queue_name,
                 worker_id=worker_id,
-                db_manager=self.db_manager
+                db_manager=None  # Workers don't touch DB anymore!
             )
             
-            # Start worker in thread
-            thread = threading.Thread(
-                target=self._run_worker,
-                args=(worker,),
-                name=f"OrderWorker-{worker_id}",
-                daemon=True
+            # Start worker as async task in same event loop
+            task = asyncio.create_task(
+                worker.start_processing(
+                    max_orders=self.worker_config.max_orders_per_worker
+                ),
+                name=f"OrderWorker-{worker_id}"
             )
             
             self.workers.append(worker)
-            self.worker_threads.append(thread)
-            thread.start()
+            self.background_tasks.append(task)
             
-            logger.info(f"🔄 Started worker {worker_id}")
+            logger.info(f"🔄 Started async worker {worker_id}")
     
-    def _run_worker(self, worker: OrderProcessor):
-        """Run a single worker in async context"""
-        try:
-            # Create new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Run worker
-            loop.run_until_complete(
-                worker.start_processing(
-                    max_orders=self.worker_config.max_orders_per_worker
-                )
-            )
-            
-        except Exception as e:
-            logger.error(f"❌ Worker {worker.worker_id} error: {e}")
-        finally:
-            loop.close()
+    # Remove the old _run_worker method - not needed anymore
     
-    def _stop_workers(self):
-        """Stop all workers"""
-        logger.info("⏹️ Stopping all workers...")
+    async def _stop_workers(self):
+        """Stop all async workers"""
+        logger.info("⏹️ Stopping all async workers...")
         
         # Signal workers to stop
         for worker in self.workers:
             worker.stop_processing()
         
-        # Wait for threads to finish
-        for thread in self.worker_threads:
-            thread.join(timeout=30)  # 30 second timeout
-            if thread.is_alive():
-                logger.warning(f"⚠️ Worker thread {thread.name} did not stop gracefully")
+        # Cancel all background tasks
+        for task in self.background_tasks:
+            task.cancel()
+        
+        # Wait for tasks to finish cancellation
+        if self.background_tasks:
+            await asyncio.gather(*self.background_tasks, return_exceptions=True)
         
         self.workers.clear()
-        self.worker_threads.clear()
+        self.background_tasks.clear()
         
-        logger.info("🏁 All workers stopped")
+        logger.info("🏁 All async workers stopped")
     
-    def _start_background_tasks(self):
+    async def _start_background_tasks(self):
         """Start background maintenance tasks"""
+        # Note: background_tasks list already initialized in _start_async_workers
+        
         if self.queue_config.enable_retry_processing:
             task = asyncio.create_task(self._retry_processor())
             self.background_tasks.append(task)

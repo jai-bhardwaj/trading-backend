@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root))
 from app.core.config import get_settings, validate_configuration, setup_logging
 from app.database import initialize_database, get_database_manager
 from app.engine.redis_engine import RedisBasedTradingEngine
+from app.services.order_db_sync_worker import db_sync_worker
 
 # Setup logging early
 logger = logging.getLogger(__name__)
@@ -209,6 +210,9 @@ async def main():
     try:
         # Initialize all components
         await manager.initialize()
+        
+        # Start DB sync worker
+        db_sync_task = asyncio.create_task(db_sync_worker())
         
         # Run the main loop
         await manager.run()

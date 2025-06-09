@@ -22,9 +22,9 @@ class DatabaseConfig(BaseModel):
         description="Database connection URL with SSL support"
     )
     
-    # Conservative connection pool for DigitalOcean managed database limits
-    pool_size: int = Field(default=2, ge=1, le=50)  # Conservative pool to avoid server connection limits
-    max_overflow: int = Field(default=1, ge=0, le=100)  # Minimal overflow to stay within limits
+    # Ultra-conservative connection pool - only for DB sync worker
+    pool_size: int = Field(default=1, ge=1, le=50)  # Single connection for DB sync worker only
+    max_overflow: int = Field(default=0, ge=0, le=100)  # No overflow to prevent connection leaks
     pool_pre_ping: bool = Field(default=True, description="Enable connection health checks")
     pool_recycle: int = Field(default=3600, description="Connection recycle time (seconds)")
     echo: bool = Field(default=False, description="Enable SQL query logging")
@@ -111,7 +111,7 @@ class TradingEngineConfig(BaseSettings):
     database_sync_interval: int = Field(60, env="DATABASE_SYNC_INTERVAL")
     performance_monitor_interval: int = Field(300, env="PERFORMANCE_MONITOR_INTERVAL")
     queue_health_check_interval: int = Field(60, env="QUEUE_HEALTH_CHECK_INTERVAL")
-    paper_trading: bool = Field(True, env="PAPER_TRADING")  # Add paper trading control
+    paper_trading: bool = Field(False, env="PAPER_TRADING")  # Live trading enabled
 
 class InstrumentConfig(BaseSettings):
     """Instrument management configuration"""

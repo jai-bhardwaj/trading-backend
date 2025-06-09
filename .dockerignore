@@ -1,0 +1,136 @@
+# 🐳 Docker Ignore File for Trading Engine
+# Optimizes build performance by excluding unnecessary files
+
+# =====================================
+# Development & Testing Files
+# =====================================
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/test_*.py
+**/tests/
+**/*_test.py
+stress_test_comprehensive.py
+redis_performance_test.py
+
+# =====================================
+# Git & Version Control
+# =====================================
+.git/
+.gitignore
+.gitattributes
+
+# =====================================
+# IDE & Editor Files
+# =====================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =====================================
+# Environment & Configuration
+# =====================================
+.env
+.env.local
+.env.production
+.env.staging
+docker.env.example
+
+# =====================================
+# Virtual Environment
+# =====================================
+venv/
+env/
+.venv/
+__pycache__/
+
+# =====================================
+# Logs & Runtime Files
+# =====================================
+logs/
+*.log
+*.pid
+*.sock
+
+# =====================================
+# Documentation & Reports
+# =====================================
+*.md
+docs/
+documentation/
+STRESS_TEST_REPORT.md
+OPTIMIZATION_SUMMARY.md
+
+# =====================================
+# Backup & Data Files
+# =====================================
+backups/
+data/*.db
+data/*.sqlite
+data/temp/
+*.backup
+
+# =====================================
+# Build & Deploy Files
+# =====================================
+deploy.sh
+deploy_production.sh
+start-monitoring.sh
+monitoring_setup.sh
+ecosystem.config.js
+
+# =====================================
+# Package Manager Files
+# =====================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =====================================
+# Database Files
+# =====================================
+*.sqlite3
+*.db
+
+# =====================================
+# Temporary Files
+# =====================================
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+
+# =====================================
+# OS Generated Files
+# =====================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =====================================
+# Coverage & Analysis
+# =====================================
+.coverage
+.nyc_output
+coverage/
+htmlcov/
+
+# =====================================
+# Docker Files (when building)
+# =====================================
+Dockerfile
+docker-compose*.yml
+docker-deploy.sh
+docker-manage.sh 

@@ -19,7 +19,7 @@ from app.models.base import (
     Strategy as StrategyModel, Order, Trade, Position, Balance,
     OrderStatus, StrategyStatus
 )
-from app.strategies.base import BaseStrategy
+from app.strategies.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
