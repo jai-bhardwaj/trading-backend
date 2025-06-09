@@ -15,8 +15,12 @@ import redis.asyncio as redis
 from sqlalchemy import text
 
 from app.database import get_database_manager, RedisKeys
-from app.models.base import *
-from app.strategies.base import StrategySignal
+from app.models.base import (
+    User, Order, Trade, Position, Balance, 
+    NotificationType as ModelNotificationType, 
+    NotificationStatus, Notification
+)
+from app.strategies.signals import StrategySignal
 
 logger = logging.getLogger(__name__)
 

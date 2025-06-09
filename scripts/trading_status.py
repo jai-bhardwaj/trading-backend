@@ -5,6 +5,7 @@ Shows comprehensive status of all trading engine components
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -14,13 +15,18 @@ sys.path.insert(0, str(project_root))
 
 from app.core.config import get_settings
 from app.database import DatabaseManager
-from app.models.base import *
+from app.models.base import (
+    User, Order, Trade, Position, Balance, Strategy,
+    OrderStatus, StrategyStatus
+)
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 async def show_engine_status():
     """Show comprehensive trading engine status"""
-    print("🎯 TRADING ENGINE STATUS DASHBOARD")
-    print("=" * 60)
+    logger.info("🎯 TRADING ENGINE STATUS DASHBOARD")
+    logger.info("=" * 60)
     
     # Initialize database
     db_manager = DatabaseManager()
@@ -31,15 +37,15 @@ async def show_engine_status():
             from sqlalchemy import select, func, desc
             
             # 1. Users Summary
-            print("\n👥 USERS")
-            print("-" * 20)
+            logger.info("\n👥 USERS")
+            logger.info("-" * 20)
             user_count = await db.execute(select(func.count(User.id)))
             total_users = user_count.scalar()
-            print(f"Total Users: {total_users}")
+            logger.info(f"Total Users: {total_users}")
             
             # 2. Strategies Summary
-            print("\n📈 STRATEGIES")
-            print("-" * 20)
+            logger.info("\n📈 STRATEGIES")
+            logger.info("-" * 20)
             strategy_result = await db.execute(
                 select(Strategy.status, func.count(Strategy.id))
                 .group_by(Strategy.status)
@@ -48,11 +54,11 @@ async def show_engine_status():
             
             for status, count in strategies:
                 status_emoji = "✅" if status == StrategyStatus.ACTIVE else "⏸️" if status == StrategyStatus.PAUSED else "📝"
-                print(f"{status_emoji} {status.value}: {count}")
+                logger.info(f"{status_emoji} {status.value}: {count}")
             
             # 3. Orders Summary
-            print("\n📋 ORDERS (Last 24 Hours)")
-            print("-" * 30)
+            logger.info("\n📋 ORDERS (Last 24 Hours)")
+            logger.info("-" * 30)
             yesterday = datetime.utcnow() - timedelta(days=1)
             
             order_result = await db.execute(
@@ -63,15 +69,15 @@ async def show_engine_status():
             orders = order_result.all()
             
             total_orders = sum(count for _, count in orders)
-            print(f"Total Orders: {total_orders}")
+            logger.info(f"Total Orders: {total_orders}")
             
             for status, count in orders:
                 status_emoji = "✅" if status == OrderStatus.COMPLETE else "⏳" if status == OrderStatus.PENDING else "🔄"
-                print(f"{status_emoji} {status.value}: {count}")
+                logger.info(f"{status_emoji} {status.value}: {count}")
             
             # 4. Recent Activity
-            print("\n🕒 RECENT ACTIVITY")
-            print("-" * 25)
+            logger.info("\n🕒 RECENT ACTIVITY")
+            logger.info("-" * 25)
             recent_orders = await db.execute(
                 select(Order)
                 .order_by(desc(Order.created_at))
@@ -83,13 +89,13 @@ async def show_engine_status():
                 for order in orders:
                     status_emoji = "✅" if order.status == OrderStatus.COMPLETE else "⏳" if order.status == OrderStatus.PENDING else "🔄"
                     time_str = order.created_at.strftime("%H:%M:%S") if order.created_at else "Unknown"
-                    print(f"{status_emoji} {time_str} - {order.symbol} {order.side.value} {order.quantity} @ ₹{order.price}")
+                    logger.info(f"{status_emoji} {time_str} - {order.symbol} {order.side.value} {order.quantity} @ ₹{order.price}")
             else:
-                print("No recent orders")
+                logger.info("No recent orders")
             
             # 5. Performance Metrics
-            print("\n📊 PERFORMANCE METRICS")
-            print("-" * 30)
+            logger.info("\n📊 PERFORMANCE METRICS")
+            logger.info("-" * 30)
             
             # Completed orders today
             today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -110,28 +116,28 @@ async def show_engine_status():
             
             success_rate = (completed_count / total_processed_count * 100) if total_processed_count > 0 else 0
             
-            print(f"Orders Completed Today: {completed_count}")
-            print(f"Success Rate (24h): {success_rate:.1f}%")
+            logger.info(f"Orders Completed Today: {completed_count}")
+            logger.info(f"Success Rate (24h): {success_rate:.1f}%")
             
             # 6. System Health
-            print("\n🏥 SYSTEM HEALTH")
-            print("-" * 20)
-            print("✅ Database: Connected")
-            print("✅ Redis Queue: Running")
-            print("✅ Order Processor: Active")
-            print("✅ Strategy Manager: Ready")
+            logger.info("\n🏥 SYSTEM HEALTH")
+            logger.info("-" * 20)
+            logger.info("✅ Database: Connected")
+            logger.info("✅ Redis Queue: Running")
+            logger.info("✅ Order Processor: Active")
+            logger.info("✅ Strategy Manager: Ready")
             
             # 7. Configuration
-            print("\n⚙️ CONFIGURATION")
-            print("-" * 20)
+            logger.info("\n⚙️ CONFIGURATION")
+            logger.info("-" * 20)
             settings = get_settings()
-            print(f"Workers: {settings.worker_count}")
-            print(f"Max Queue Size: {settings.max_queue_size}")
-            print(f"Loop Interval: {settings.engine_loop_interval}s")
-            print(f"Environment: {settings.environment}")
+            logger.info(f"Workers: {settings.worker_count}")
+            logger.info(f"Max Queue Size: {settings.max_queue_size}")
+            logger.info(f"Loop Interval: {settings.engine_loop_interval}s")
+            logger.info(f"Environment: {settings.environment}")
             
     except Exception as e:
-        print(f"❌ Error getting status: {e}")
+        logger.error(f"❌ Error getting status: {e}")
     
     finally:
         await db_manager.close()
@@ -140,11 +146,11 @@ async def main():
     """Main function"""
     await show_engine_status()
     
-    print("\n" + "=" * 60)
-    print("🎉 Trading Engine is operational and ready for trading!")
-    print("📋 To submit test orders: python scripts/test_trading.py")
-    print("📊 To view logs: pm2 logs trading-engine")
-    print("🔄 To restart: pm2 restart trading-engine")
+    logger.info("\n" + "=" * 60)
+    logger.info("🎉 Trading Engine is operational and ready for trading!")
+    logger.info("📋 To submit test orders: python scripts/test_trading.py")
+    logger.info("📊 To view logs: pm2 logs trading-engine")
+    logger.info("🔄 To restart: pm2 restart trading-engine")
 
 if __name__ == "__main__":
     asyncio.run(main()) 
