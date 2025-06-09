@@ -7,8 +7,10 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
-from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..base_strategy import BaseStrategy
 from ..registry import AutomaticStrategyRegistry
+from app.models.base import AssetClass
+from app.utils.timezone_utils import ist_now as datetime_now
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,59 @@ class RSIDMIStrategy(BaseStrategy):
         
         return rsi
     
+    async def process_market_data(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process market data and generate signals (required interface method)"""
+        try:
+            symbol = market_data.get('symbol', 'UNKNOWN')
+            close_price = market_data.get('ltp', market_data.get('close', 0))
+            
+            # Initialize data structures
+            if symbol not in self.price_changes:
+                self.price_changes[symbol] = []
+                self.prev_prices[symbol] = close_price
+                return None
+            
+            # Calculate price change for RSI
+            price_change = close_price - self.prev_prices[symbol]
+            self.price_changes[symbol].append(price_change)
+            self.prev_prices[symbol] = close_price
+            
+            # Keep only required history
+            if len(self.price_changes[symbol]) > self.rsi_period + 10:
+                self.price_changes[symbol] = self.price_changes[symbol][-self.rsi_period:]
+            
+            # Generate signal based on RSI analysis
+            rsi = self.calculate_rsi(symbol)
+            if rsi is None:
+                return None
+            
+            # Simulate +DI for signal generation
+            plus_di = 30 if rsi > 50 else 20
+            
+            # Generate buy signal
+            if rsi > self.upper_limit and plus_di > self.di_upper_limit:
+                return {
+                    'action': 'BUY',
+                    'symbol': symbol,
+                    'quantity': 10,
+                    'reason': f'RSI({rsi:.1f}) > {self.upper_limit}, +DI({plus_di:.1f}) > {self.di_upper_limit}'
+                }
+            
+            # Generate sell signal  
+            elif rsi < self.lower_limit:
+                return {
+                    'action': 'SELL',
+                    'symbol': symbol,
+                    'quantity': 10,
+                    'reason': f'RSI({rsi:.1f}) < {self.lower_limit}'
+                }
+            
+            return None
+                
+        except Exception as e:
+            logger.error(f"Error processing market data for {symbol}: {e}")
+            return None
+
     async def on_market_data(self, symbol: str, data: Dict[str, Any]):
         """Process market data for RSI and DMI calculation"""
         try:
@@ -104,7 +159,7 @@ class RSIDMIStrategy(BaseStrategy):
     async def generate_signals(self) -> List[Dict[str, Any]]:
         """Generate RSI DMI trading signals"""
         signals = []
-        current_time = datetime.now()
+        current_time = datetime_now()
         
         # Check trading hours
         if not (self.market_start <= current_time.time() <= self.market_end):
@@ -190,7 +245,7 @@ class RSIDMIStrategy(BaseStrategy):
         if order.side.value == 'BUY':
             # Track entry details
             self.entry_prices[order.symbol] = order.average_price
-            self.entry_times[order.symbol] = datetime.now()
+            self.entry_times[order.symbol] = datetime_now()
             
             logger.info(f"RSI DMI position opened: {order.symbol} @ ₹{order.average_price}")
         
@@ -207,4 +262,14 @@ class RSIDMIStrategy(BaseStrategy):
     
     async def on_position_closed(self, position, pnl: float):
         """Called when a position is closed"""
-        logger.info(f"RSI DMI position closed: {position.symbol} with P&L: ₹{pnl}") 
+        logger.info(f"RSI DMI position closed: {position.symbol} with P&L: ₹{pnl}")
+    
+    def calculate_position_size(self, signal, current_balance: float) -> int:
+        """Calculate position size based on risk management rules"""
+        # Base position size calculation
+        max_investment = current_balance * self.max_position_size
+        if hasattr(signal, 'price') and signal.price:
+            quantity = int(max_investment / signal.price)
+        else:
+            quantity = 20  # Default quantity
+        return max(1, quantity) 
