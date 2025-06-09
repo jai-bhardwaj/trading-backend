@@ -9,6 +9,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
+from app.utils.timezone_utils import ist_now as datetime_now
 from decimal import Decimal
 import redis.asyncio as aioredis
 from dataclasses import dataclass, asdict
@@ -151,6 +152,9 @@ class BaseStrategy(ABC):
         self.max_positions = config.get('max_positions', 5)
         self.risk_per_trade = config.get('risk_per_trade', 0.02)  # 2%
         
+        # Strategy parameters (for compatibility with existing strategies)
+        self.parameters = config.get('parameters', {})
+        
     async def initialize(self):
         """Initialize strategy with new schema components"""
         try:
@@ -212,7 +216,7 @@ class BaseStrategy(ABC):
             await self.on_strategy_iteration()
             
             # Update last execution time
-            self.metrics['last_update'] = datetime.now()
+            self.metrics['last_update'] = datetime_now()
             
         except Exception as e:
             logger.error(f"Strategy execution error: {e}")
@@ -279,7 +283,7 @@ class BaseStrategy(ABC):
                             product_type: str = 'INTRADAY') -> str:
         """Place a buy order using the new schema"""
         try:
-            order_id = f"ord_{int(datetime.now().timestamp() * 1000)}"
+            order_id = f"ord_{int(datetime_now().timestamp() * 1000)}"
             
             # Insert order into database
             async with get_database_manager().get_async_session() as session:
@@ -328,7 +332,7 @@ class BaseStrategy(ABC):
                 average_price=None,
                 tags=[f"strategy_{self.config_id}"],
                 notes=None,
-                created_at=datetime.now()
+                created_at=datetime_now()
             )
             
             self.orders[order_id] = order
@@ -362,7 +366,7 @@ class BaseStrategy(ABC):
                              product_type: str = 'INTRADAY') -> str:
         """Place a sell order using the new schema"""
         try:
-            order_id = f"ord_{int(datetime.now().timestamp() * 1000)}"
+            order_id = f"ord_{int(datetime_now().timestamp() * 1000)}"
             
             # Insert order into database
             async with get_database_manager().get_async_session() as session:
@@ -411,7 +415,7 @@ class BaseStrategy(ABC):
                 average_price=None,
                 tags=[f"strategy_{self.config_id}"],
                 notes=None,
-                created_at=datetime.now()
+                created_at=datetime_now()
             )
             
             self.orders[order_id] = order
@@ -534,7 +538,7 @@ class BaseStrategy(ABC):
             else:
                 # Create new position (only for BUY orders)
                 if order.side == OrderSide.BUY:
-                    position_id = f"pos_{int(datetime.now().timestamp() * 1000)}"
+                    position_id = f"pos_{int(datetime_now().timestamp() * 1000)}"
                     
                     position = Position(
                         id=position_id,
@@ -653,7 +657,7 @@ class BaseStrategy(ABC):
             async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT * FROM positions 
-                    WHERE user_id = :user_id AND quantity > 0
+                    WHERE "userId" = :user_id AND quantity > 0
                 """), {"user_id": self.user_id})
                 
                 for row in result.fetchall():
@@ -685,7 +689,7 @@ class BaseStrategy(ABC):
             async with get_database_manager().get_async_session() as session:
                 result = await session.execute(text("""
                     SELECT * FROM orders 
-                    WHERE user_id = :user_id AND strategy_id = :strategy_id
+                    WHERE "userId" = :user_id AND "strategyId" = :strategy_id
                     AND status IN ('PENDING', 'PLACED', 'OPEN')
                 """), {"user_id": self.user_id, "strategy_id": self.strategy_id})
                 
@@ -766,7 +770,7 @@ class BaseStrategy(ABC):
     
     async def update_metrics(self):
         """Update strategy metrics"""
-        self.metrics['last_update'] = datetime.now()
+        self.metrics['last_update'] = datetime_now()
         
         # Update P&L for open positions
         for position in self.positions.values():

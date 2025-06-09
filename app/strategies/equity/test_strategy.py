@@ -7,8 +7,10 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time, timedelta
-from ..base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, SignalType
+from ..base_strategy import BaseStrategy
 from ..registry import AutomaticStrategyRegistry
+from app.utils.timezone_utils import ist_now as datetime_now, ISTDateTime
+from app.models.base import AssetClass
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ class TestStrategy(BaseStrategy):
     - alternate_sides: Whether to alternate BUY/SELL (default: True)
     """
     
-    def initialize(self) -> None:
+    async def on_initialize(self):
         """Initialize test strategy parameters"""
         # Test configuration
         self.order_interval_minutes = self.parameters.get('order_interval_minutes', 1)  # Generate orders every 1 minute
@@ -41,7 +43,7 @@ class TestStrategy(BaseStrategy):
         self.last_order_time = None
         self.order_count = 0
         self.current_side = 'BUY'  # Start with BUY orders
-        self.test_start_time = datetime.now()
+        self.test_start_time = datetime_now()
         
         # Trading hours (9:15 AM to 3:30 PM IST)
         self.market_start = time(9, 15)
@@ -54,19 +56,16 @@ class TestStrategy(BaseStrategy):
         logger.info(f"   🔢 Max orders: {self.max_test_orders}")
         logger.info(f"   🔄 Alternate sides: {self.alternate_sides}")
     
-    def process_market_data(self, market_data: MarketData) -> Optional[StrategySignal]:
+    async def process_market_data(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process market data and generate test signals"""
-        # Add to historical data
-        self.add_historical_data(market_data)
-        
-        current_time = datetime.now()
+        current_time = datetime_now()
         
         # Check if we've reached max orders
         if self.order_count >= self.max_test_orders:
             return None
         
-        # Trading hours check disabled for testing - generate orders 24/7
-        # if not (self.market_start <= current_time.time() <= self.market_end):
+        # Trading hours check disabled for testing - generate orders 24/7 for system testing
+        # if not ISTDateTime.is_market_hours(current_time):
         #     return None
         
         # Check if it's time for next order
@@ -74,27 +73,28 @@ class TestStrategy(BaseStrategy):
             try:
                 # Determine order side
                 order_side = self._get_next_order_side()
-                signal_type = SignalType.BUY if order_side == 'BUY' else SignalType.SELL
                 
                 # Create test signal
-                signal = StrategySignal(
-                    signal_type=signal_type,
-                    symbol=market_data.symbol,
-                    confidence=0.8,  # High confidence for test orders
-                    quantity=self.test_quantity,
-                    price=market_data.close,
-                    metadata={
+                signal = {
+                    'type': order_side,
+                    'symbol': market_data.get('symbol', self.test_symbols[0]),
+                    'exchange': 'NSE',
+                    'quantity': self.test_quantity,
+                    'order_type': 'MARKET',
+                    'product_type': 'INTRADAY',
+                    'confidence': 0.8,
+                    'metadata': {
                         'test_order_number': self.order_count + 1,
                         'order_interval_minutes': self.order_interval_minutes,
                         'reason': f'Test order #{self.order_count + 1} - {self.order_interval_minutes}min interval'
                     }
-                )
+                }
                 
                 # Update state
                 self.last_order_time = current_time
                 self.order_count += 1
                 
-                logger.info(f"🧪 Test signal generated: {signal_type.value} {market_data.symbol} x{self.test_quantity} (Order #{self.order_count})")
+                logger.info(f"🧪 Test signal generated: {order_side} {signal['symbol']} x{self.test_quantity} (Order #{self.order_count})")
                 
                 return signal
                 
@@ -104,10 +104,7 @@ class TestStrategy(BaseStrategy):
         
         return None
     
-    def calculate_position_size(self, signal: StrategySignal, current_balance: float) -> int:
-        """Calculate position size for test orders"""
-        # For test strategy, always use the configured test quantity
-        return self.test_quantity
+
     
     async def on_market_data(self, symbol: str, data: Dict[str, Any]):
         """Process market data (minimal processing for test strategy)"""
@@ -118,15 +115,15 @@ class TestStrategy(BaseStrategy):
     async def generate_signals(self) -> List[Dict[str, Any]]:
         """Generate test signals at configured intervals"""
         signals = []
-        current_time = datetime.now()
+        current_time = datetime_now()
         
         # Check if we've reached max orders
         if self.order_count >= self.max_test_orders:
             logger.info(f"🏁 Test strategy completed: {self.order_count} orders placed")
             return signals
         
-        # Trading hours check disabled for testing - generate orders 24/7
-        # if not (self.market_start <= current_time.time() <= self.market_end):
+        # Trading hours check disabled for testing - generate orders 24/7 for system testing
+        # if not ISTDateTime.is_market_hours(current_time):
         #     return signals
         
         # Check if it's time for next order
@@ -186,7 +183,7 @@ class TestStrategy(BaseStrategy):
     
     async def on_strategy_iteration(self):
         """Called after each strategy iteration"""
-        current_time = datetime.now()
+        current_time = datetime_now()
         runtime_minutes = (current_time - self.test_start_time).total_seconds() / 60
         
         # Calculate next order time
@@ -231,7 +228,7 @@ class TestStrategy(BaseStrategy):
     
     def get_test_summary(self) -> Dict[str, Any]:
         """Get a summary of test execution"""
-        current_time = datetime.now()
+        current_time = datetime_now()
         runtime_minutes = (current_time - self.test_start_time).total_seconds() / 60
         
         return {
