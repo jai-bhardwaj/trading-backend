@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+logger = logging.getLogger(__name__)
+
 """
 Comprehensive Trading System Health Check
 Tests all critical components and their integration
@@ -31,8 +34,8 @@ class HealthChecker:
         
     async def run_all_checks(self):
         """Run all health checks"""
-        print("🏥 TRADING SYSTEM HEALTH CHECK")
-        print("=" * 50)
+        logger.info("🏥 TRADING SYSTEM HEALTH CHECK")
+        logger.info("=" * 50)
         
         # Database checks
         await self.check_database()
@@ -254,53 +257,53 @@ class HealthChecker:
     def log_success(self, component, message):
         """Log successful check"""
         self.results.append(("SUCCESS", component, message))
-        print(f"✅ {component}: {message}")
+        logger.info(f"✅ {component}: {message}")
     
     def log_warning(self, component, message):
         """Log warning"""
         self.results.append(("WARNING", component, message))
-        print(f"⚠️ {component}: {message}")
+        logger.warning(f"⚠️ {component}: {message}")
     
     def log_error(self, component, message):
         """Log error"""
         self.results.append(("ERROR", component, message))
-        print(f"❌ {component}: {message}")
+        logger.error(f"❌ {component}: {message}")
     
     def log_info(self, component, message):
         """Log info"""
         self.results.append(("INFO", component, message))
-        print(f"ℹ️ {component}: {message}")
+        logger.info(f"ℹ️ {component}: {message}")
     
     def print_summary(self):
         """Print health check summary"""
-        print("\n" + "=" * 50)
-        print("📊 HEALTH CHECK SUMMARY")
-        print("=" * 50)
+        logger.info("\n" + "=" * 50)
+        logger.info("📊 HEALTH CHECK SUMMARY")
+        logger.info("=" * 50)
         
         success_count = len([r for r in self.results if r[0] == "SUCCESS"])
         warning_count = len([r for r in self.results if r[0] == "WARNING"])
         error_count = len([r for r in self.results if r[0] == "ERROR"])
         info_count = len([r for r in self.results if r[0] == "INFO"])
         
-        print(f"✅ Success: {success_count}")
-        print(f"⚠️ Warnings: {warning_count}")
-        print(f"❌ Errors: {error_count}")
-        print(f"ℹ️ Info: {info_count}")
+        logger.info(f"✅ Success: {success_count}")
+        logger.warning(f"⚠️ Warnings: {warning_count}")
+        logger.error(f"❌ Errors: {error_count}")
+        logger.info(f"ℹ️ Info: {info_count}")
         
         if error_count == 0 and warning_count <= 2:
-            print("\n🎉 System Health: EXCELLENT")
+            logger.info("\n🎉 System Health: EXCELLENT")
         elif error_count == 0:
-            print("\n✅ System Health: GOOD")
+            logger.info("\n✅ System Health: GOOD")
         elif error_count <= 2:
-            print("\n⚠️ System Health: FAIR (needs attention)")
+            logger.info("\n⚠️ System Health: FAIR (needs attention)")
         else:
-            print("\n❌ System Health: POOR (immediate action required)")
+            logger.info("\n❌ System Health: POOR (immediate action required)")
         
-        print("\n🔧 Quick Actions:")
-        print("• View logs: pm2 logs trading-engine")
-        print("• Restart engine: pm2 restart trading-engine")
-        print("• Refresh instruments: python3 scripts/refresh_instruments.py")
-        print("• Test orders: python3 scripts/test_trading.py")
+        logger.info("\n🔧 Quick Actions:")
+        logger.info("• View logs: pm2 logs trading-engine")
+        logger.info("• Restart engine: pm2 restart trading-engine")
+        logger.info("• Refresh instruments: python3 scripts/refresh_instruments.py")
+        logger.info("• Test orders: python3 scripts/test_trading.py")
     
     async def cleanup(self):
         """Cleanup resources"""

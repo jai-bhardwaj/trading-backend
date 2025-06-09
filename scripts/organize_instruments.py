@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+logger = logging.getLogger(__name__)
+
 """
 Organize AngelOne Instruments - Clean Implementation
 
@@ -7,6 +10,7 @@ into clean categories based on instrument_type.
 """
 
 import asyncio
+import logging
 import json
 import redis.asyncio as aioredis
 from collections import defaultdict
@@ -16,8 +20,8 @@ from pathlib import Path
 async def organize_instruments():
     """Organize instruments into clean categories"""
     
-    print("🔄 Organizing AngelOne instruments...")
-    print("=" * 50)
+    logger.info("🔄 Organizing AngelOne instruments...")
+    logger.info("=" * 50)
     
     # Connect to Redis
     redis_client = aioredis.from_url('redis://localhost:6379', encoding='utf-8', decode_responses=True)
@@ -32,16 +36,16 @@ async def organize_instruments():
             instruments = json.loads(raw_data)
         else:
             # Fallback to loading from file
-            print("📁 No Redis data found, checking data/instruments directory...")
+            logger.info("📁 No Redis data found, checking data/instruments directory...")
             data_source = "file"
             instruments = load_instruments_from_file()
         
         if not instruments:
-            print("❌ No instruments data found in Redis or files")
-            print("💡 Run the download script first to get instrument data")
+            logger.error("❌ No instruments data found in Redis or files")
+            logger.info("💡 Run the download script first to get instrument data")
             return
         
-        print(f"📊 Found {len(instruments):,} total instruments from {data_source}")
+        logger.info(f"📊 Found {len(instruments):,} total instruments from {data_source}")
         
         # Define clean category mapping
         CATEGORIES = {
@@ -97,37 +101,37 @@ async def organize_instruments():
             }
         
         # Display analysis
-        print("\n📊 Instrument Type Analysis:")
-        print("-" * 30)
+        logger.info("\n📊 Instrument Type Analysis:")
+        logger.info("-" * 30)
         for inst_type, count in sorted(type_analysis.items(), key=lambda x: x[1], reverse=True):
             status = "✅" if any(inst_type in types for types in CATEGORIES.values()) else "❓"
-            print(f"  {status} {inst_type or '(empty)'}: {count:,}")
+            logger.info(f"  {status} {inst_type or '(empty)'}: {count:,}")
         
         if unknown_types:
-            print(f"\n⚠️  Unknown instrument types: {', '.join(sorted(unknown_types))}")
+            logger.info(f"\n⚠️  Unknown instrument types: {', '.join(sorted(unknown_types))}")
         
-        print(f"\n📂 Organized Categories:")
-        print("-" * 30)
+        logger.info(f"\n📂 Organized Categories:")
+        logger.info("-" * 30)
         total_organized = 0
         for category, instruments_dict in organized_data.items():
             if instruments_dict:
                 count = len(instruments_dict)
                 total_organized += count
-                print(f"  📁 {category}: {count:,} instruments")
+                logger.info(f"  📁 {category}: {count:,} instruments")
                 
                 # Show sample symbols
                 samples = list(instruments_dict.keys())[:3]
                 for sample in samples:
                     inst = instruments_dict[sample]
-                    print(f"    • {sample}: {inst['name']} ({inst['exchange']})")
+                    logger.info(f"    • {sample}: {inst['name']} ({inst['exchange']})")
         
-        print(f"\n📈 Organization Summary:")
-        print(f"  Total instruments: {len(instruments):,}")
-        print(f"  Successfully organized: {total_organized:,}")
-        print(f"  Categories created: {len([cat for cat, data in organized_data.items() if data])}")
+        logger.info(f"\n📈 Organization Summary:")
+        logger.info(f"  Total instruments: {len(instruments):,}")
+        logger.info(f"  Successfully organized: {total_organized:,}")
+        logger.info(f"  Categories created: {len([cat for cat, data in organized_data.items() if data])}")
         
         # Store organized data in Redis
-        print(f"\n💾 Storing organized data in Redis...")
+        logger.info(f"\n💾 Storing organized data in Redis...")
         pipeline = redis_client.pipeline()
         
         # Store each category
@@ -135,7 +139,7 @@ async def organize_instruments():
             if instruments_dict:
                 key = f"instruments:category:{category.lower()}"
                 pipeline.set(key, json.dumps(instruments_dict))
-                print(f"  📁 Storing {category}: {len(instruments_dict):,} instruments")
+                logger.info(f"  📁 Storing {category}: {len(instruments_dict):,} instruments")
         
         # Create summary
         summary = {}
@@ -161,21 +165,21 @@ async def organize_instruments():
         # Execute all Redis operations
         await pipeline.execute()
         
-        print(f"\n✅ Successfully organized {len(instruments):,} instruments!")
-        print(f"🎯 Categories created: {len(summary)}")
+        logger.info(f"\n✅ Successfully organized {len(instruments):,} instruments!")
+        logger.info(f"🎯 Categories created: {len(summary)}")
         
         # Show final summary
-        print(f"\n📋 Final Category Summary:")
-        print("-" * 30)
+        logger.info(f"\n📋 Final Category Summary:")
+        logger.info("-" * 30)
         for category, info in summary.items():
             exchanges = ', '.join(info['exchanges'][:3])
             if len(info['exchanges']) > 3:
                 exchanges += f" (+{len(info['exchanges'])-3} more)"
-            print(f"  📂 {category}: {info['count']:,} instruments")
-            print(f"     Exchanges: {exchanges}")
+            logger.info(f"  📂 {category}: {info['count']:,} instruments")
+            logger.info(f"     Exchanges: {exchanges}")
     
     except Exception as e:
-        print(f"❌ Error during organization: {e}")
+        logger.error(f"❌ Error during organization: {e}")
         import traceback
         traceback.print_exc()
     
@@ -187,25 +191,25 @@ def load_instruments_from_file() -> dict:
     try:
         instruments_dir = Path("data/instruments")
         if not instruments_dir.exists():
-            print(f"📁 Directory {instruments_dir} does not exist")
+            logger.info(f"📁 Directory {instruments_dir} does not exist")
             return {}
         
         # Find the most recent instruments file
         instrument_files = list(instruments_dir.glob("instruments_*.json"))
         if not instrument_files:
-            print(f"📁 No instrument files found in {instruments_dir}")
+            logger.info(f"📁 No instrument files found in {instruments_dir}")
             return {}
         
         # Sort by filename (date) and get the latest
         latest_file = sorted(instrument_files)[-1]
-        print(f"📄 Loading instruments from {latest_file}")
+        logger.info(f"📄 Loading instruments from {latest_file}")
         
         # Load and return the data
         with open(latest_file, 'r', encoding='utf-8') as f:
             return json.load(f)
             
     except Exception as e:
-        print(f"❌ Error loading instruments from file: {e}")
+        logger.error(f"❌ Error loading instruments from file: {e}")
         return {}
 
 if __name__ == "__main__":

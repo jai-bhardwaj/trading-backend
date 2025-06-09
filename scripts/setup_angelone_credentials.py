@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+logger = logging.getLogger(__name__)
+
 """
 Setup AngelOne Credentials
 
@@ -7,14 +10,15 @@ This will update the .env file with the correct credentials.
 """
 
 import os
+import logging
 from pathlib import Path
 
 def setup_angelone_credentials():
     """Setup AngelOne credentials interactively"""
-    print("🔑 AngelOne Credentials Setup")
-    print("=" * 50)
-    print("This will help you configure AngelOne API credentials for instrument fetching.")
-    print("Note: These are separate from the main trading broker credentials.")
+    logger.info("🔑 AngelOne Credentials Setup")
+    logger.info("=" * 50)
+    logger.info("This will help you configure AngelOne API credentials for instrument fetching.")
+    logger.info("Note: These are separate from the main trading broker credentials.")
     print()
     
     # Get current values
@@ -23,15 +27,15 @@ def setup_angelone_credentials():
     current_password = os.getenv('ANGELONE_PASSWORD_INSTRUMENTS', '')
     current_totp = os.getenv('ANGELONE_TOTP_SECRET_INSTRUMENTS', '')
     
-    print("Current values:")
-    print(f"API Key: {current_api_key[:10]}..." if current_api_key else "API Key: Not set")
-    print(f"Client ID: {current_client_id}" if current_client_id else "Client ID: Not set")
-    print(f"Password: {'Set' if current_password else 'Not set'}")
-    print(f"TOTP Secret: {'Set' if current_totp else 'Not set'}")
+    logger.info("Current values:")
+    logger.info(f"API Key: {current_api_key[:10]}..." if current_api_key else "API Key: Not set")
+    logger.info(f"Client ID: {current_client_id}" if current_client_id else "Client ID: Not set")
+    logger.info(f"Password: {'Set' if current_password else 'Not set'}")
+    logger.info(f"TOTP Secret: {'Set' if current_totp else 'Not set'}")
     print()
     
     # Get new values
-    print("Enter new credentials (press Enter to keep current value):")
+    logger.info("Enter new credentials (press Enter to keep current value):")
     
     api_key = input(f"API Key [{current_api_key[:10]}...]: ").strip()
     if not api_key:
@@ -51,7 +55,7 @@ def setup_angelone_credentials():
     
     # Validate inputs
     if not all([api_key, client_id, password]):
-        print("❌ Error: API Key, Client ID, and Password are required!")
+        logger.error("❌ Error: API Key, Client ID, and Password are required!")
         return False
     
     # Update .env file
@@ -82,19 +86,19 @@ def setup_angelone_credentials():
         for key, value in env_content.items():
             f.write(f"{key}={value}\n")
     
-    print(f"✅ Credentials saved to {env_file}")
+    logger.info(f"✅ Credentials saved to {env_file}")
     print()
-    print("Next steps:")
-    print("1. Restart the trading engine to use the new credentials")
-    print("2. Check logs for successful AngelOne authentication")
-    print("3. If authentication fails, verify your credentials are correct")
+    logger.info("Next steps:")
+    logger.info("1. Restart the trading engine to use the new credentials")
+    logger.info("2. Check logs for successful AngelOne authentication")
+    logger.info("3. If authentication fails, verify your credentials are correct")
     
     return True
 
 def test_credentials():
     """Test if current credentials work"""
-    print("🧪 Testing AngelOne Credentials")
-    print("=" * 50)
+    logger.info("🧪 Testing AngelOne Credentials")
+    logger.info("=" * 50)
     
     # Check if credentials are set
     api_key = os.getenv('ANGELONE_API_KEY_INSTRUMENTS')
@@ -103,17 +107,17 @@ def test_credentials():
     totp_secret = os.getenv('ANGELONE_TOTP_SECRET_INSTRUMENTS')
     
     if not all([api_key, client_id, password]):
-        print("❌ Credentials not fully configured")
-        print("Use setup mode to configure credentials first")
+        logger.error("❌ Credentials not fully configured")
+        logger.info("Use setup mode to configure credentials first")
         return False
     
-    print(f"✅ API Key: {api_key[:10]}...")
-    print(f"✅ Client ID: {client_id}")
-    print(f"✅ Password: Set")
-    print(f"✅ TOTP Secret: {'Set' if totp_secret else 'Not set'}")
+    logger.info(f"✅ API Key: {api_key[:10]}...")
+    logger.info(f"✅ Client ID: {client_id}")
+    logger.info(f"✅ Password: Set")
+    logger.info(f"✅ TOTP Secret: {'Set' if totp_secret else 'Not set'}")
     
     # Try to test authentication (simplified)
-    print("\n🔍 Testing authentication...")
+    logger.info("\n🔍 Testing authentication...")
     try:
         import asyncio
         from app.core.instrument_manager import InstrumentManager
@@ -128,17 +132,17 @@ def test_credentials():
             im.totp_secret = totp_secret
             
             if im._are_credentials_configured():
-                print("✅ Credentials format valid")
+                logger.info("✅ Credentials format valid")
                 return True
             else:
-                print("❌ Credentials format invalid")
+                logger.error("❌ Credentials format invalid")
                 return False
         
         success = asyncio.run(test_auth())
         return success
         
     except Exception as e:
-        print(f"❌ Test failed: {e}")
+        logger.error(f"❌ Test failed: {e}")
         return False
 
 if __name__ == "__main__":

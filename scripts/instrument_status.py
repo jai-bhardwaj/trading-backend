@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
+
+logger = logging.getLogger(__name__)
+
 """
 Instrument Manager Status
 Shows current instrument status and strategy integration
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -18,8 +22,8 @@ from sqlalchemy import select
 
 async def show_instrument_status():
     """Show comprehensive instrument manager status"""
-    print("📊 INSTRUMENT MANAGER STATUS")
-    print("=" * 60)
+    logger.info("📊 INSTRUMENT MANAGER STATUS")
+    logger.info("=" * 60)
     
     db_manager = None
     instrument_manager = None
@@ -34,35 +38,35 @@ async def show_instrument_status():
         # Get status
         status = instrument_manager.get_status()
         
-        print(f"🔗 API Status: {status['auth_status']}")
-        print(f"🕐 Last Updated: {status['last_updated']}")
-        print(f"📈 Total Instruments: {status['total_instruments']}")
-        print(f"   • Equity: {status['equity_count']}")
-        print(f"   • Derivatives: {status['derivatives_count']}")
+        logger.info(f"🔗 API Status: {status['auth_status']}")
+        logger.info(f"🕐 Last Updated: {status['last_updated']}")
+        logger.info(f"📈 Total Instruments: {status['total_instruments']}")
+        logger.info(f"   • Equity: {status['equity_count']}")
+        logger.info(f"   • Derivatives: {status['derivatives_count']}")
         print()
         
         # Show sample instruments
-        print("📋 SAMPLE INSTRUMENTS")
-        print("-" * 40)
+        logger.info("📋 SAMPLE INSTRUMENTS")
+        logger.info("-" * 40)
         
         equity_instruments = instrument_manager.get_instruments_by_asset_class(AssetClass.EQUITY)
         if equity_instruments:
-            print("💼 Equity (Top 10):")
+            logger.info("💼 Equity (Top 10):")
             for i, inst in enumerate(equity_instruments[:10], 1):
-                print(f"   {i:2d}. {inst.symbol} ({inst.exchange}) - Lot: {inst.lot_size}")
+                logger.info(f"   {i:2d}. {inst.symbol} ({inst.exchange}) - Lot: {inst.lot_size}")
         
         derivatives_instruments = instrument_manager.get_instruments_by_asset_class(AssetClass.DERIVATIVES)
         if derivatives_instruments:
-            print("\n📊 Derivatives (Top 5):")
+            logger.info("\n📊 Derivatives (Top 5):")
             for i, inst in enumerate(derivatives_instruments[:5], 1):
                 expiry_info = f" Exp: {inst.expiry}" if inst.expiry else ""
-                print(f"   {i}. {inst.symbol} ({inst.exchange}){expiry_info} - Lot: {inst.lot_size}")
+                logger.info(f"   {i}. {inst.symbol} ({inst.exchange}){expiry_info} - Lot: {inst.lot_size}")
         
         print()
         
         # Show strategy integration
-        print("🎯 STRATEGY INTEGRATION")
-        print("-" * 40)
+        logger.info("🎯 STRATEGY INTEGRATION")
+        logger.info("-" * 40)
         
         async with db_manager.get_session() as db:
             result = await db.execute(
@@ -74,29 +78,29 @@ async def show_instrument_status():
                 asset_class = strategy.asset_class.value
                 symbol_count = len(strategy.symbols) if strategy.symbols else 0
                 
-                print(f"📈 {strategy.name}")
-                print(f"   • Asset Class: {asset_class}")
-                print(f"   • Symbols: {symbol_count}")
+                logger.info(f"📈 {strategy.name}")
+                logger.info(f"   • Asset Class: {asset_class}")
+                logger.info(f"   • Symbols: {symbol_count}")
                 
                 if strategy.symbols:
-                    print(f"   • Sample Symbols: {', '.join(strategy.symbols[:5])}")
+                    logger.info(f"   • Sample Symbols: {', '.join(strategy.symbols[:5])}")
                     if len(strategy.symbols) > 5:
-                        print(f"     ... and {len(strategy.symbols) - 5} more")
+                        logger.info(f"     ... and {len(strategy.symbols) - 5} more")
                 print()
         
         # Configuration info
-        print("⚙️ CONFIGURATION")
-        print("-" * 40)
-        print("For real AngelOne data, set these environment variables:")
-        print("• ANGELONE_API_KEY_INSTRUMENTS=your_api_key")
-        print("• ANGELONE_CLIENT_ID_INSTRUMENTS=your_client_id")
-        print("• ANGELONE_PASSWORD_INSTRUMENTS=your_password")
-        print("• ANGELONE_TOTP_SECRET_INSTRUMENTS=your_totp_secret")
+        logger.info("⚙️ CONFIGURATION")
+        logger.info("-" * 40)
+        logger.info("For real AngelOne data, set these environment variables:")
+        logger.info("• ANGELONE_API_KEY_INSTRUMENTS=your_api_key")
+        logger.info("• ANGELONE_CLIENT_ID_INSTRUMENTS=your_client_id")
+        logger.info("• ANGELONE_PASSWORD_INSTRUMENTS=your_password")
+        logger.info("• ANGELONE_TOTP_SECRET_INSTRUMENTS=your_totp_secret")
         print()
-        print("📅 Run daily: python3 scripts/refresh_instruments.py")
+        logger.info("📅 Run daily: python3 scripts/refresh_instruments.py")
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {e}")
     
     finally:
         if instrument_manager:
