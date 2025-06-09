@@ -14,8 +14,10 @@ from typing import Dict, Type, List, Optional, Set, Any
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
+from app.utils.timezone_utils import ist_now as datetime_now
 
-from .base import BaseStrategy, AssetClass
+from .base_strategy import BaseStrategy
+from app.models.base import AssetClass
 
 logger = logging.getLogger(__name__)
 
@@ -370,8 +372,8 @@ class AutomaticStrategyRegistry:
                 description="Metadata extraction failed",
                 version="1.0.0",
                 author="Unknown",
-                created_date=datetime.now(),
-                last_modified=datetime.now(),
+                created_date=datetime_now(),
+                last_modified=datetime_now(),
                 dependencies=[],
                 parameters={}
             )

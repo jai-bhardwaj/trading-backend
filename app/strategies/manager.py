@@ -8,10 +8,12 @@ the AutomaticStrategyRegistry to dynamically load and execute trading strategies
 import logging
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
+from app.utils.timezone_utils import ist_now as datetime_now
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from .base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass
+from .base_strategy import BaseStrategy
+from app.models.base import AssetClass
 from .registry import AutomaticStrategyRegistry
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,7 @@ class StrategyManager:
     def __init__(self, max_workers: int = 4):
         self.active_strategies: Dict[str, BaseStrategy] = {}
         self.strategy_configs: Dict[str, StrategyConfig] = {}
-        self.strategy_signals: Dict[str, List[StrategySignal]] = {}
+        self.strategy_signals: Dict[str, List[Dict[str, Any]]] = {}
         self.strategy_performance: Dict[str, Dict[str, float]] = {}
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -72,7 +74,7 @@ class StrategyManager:
                         'module_path': strategy_class.__module__ if strategy_class else 'Unknown',
                         'parameters': {},
                         'is_active': True,
-                        'last_modified': datetime.now().isoformat()
+                        'last_modified': datetime_now().isoformat()
                     }
             
             return available_strategies
@@ -165,7 +167,7 @@ class StrategyManager:
         
         return info
     
-    def process_market_data_single(self, strategy_id: str, market_data: MarketData) -> Optional[StrategySignal]:
+    def process_market_data_single(self, strategy_id: str, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process market data for a single strategy"""
         try:
             if strategy_id not in self.active_strategies:
@@ -209,7 +211,7 @@ class StrategyManager:
             logger.error(f"Error processing market data for {strategy_id}: {e}")
             return None
     
-    def process_market_data(self, market_data: MarketData) -> List[StrategySignal]:
+    def process_market_data(self, market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Process market data across all active strategies
         
@@ -260,7 +262,7 @@ class StrategyManager:
             logger.error(f"Error processing market data: {e}")
             return signals
     
-    def get_recent_signals(self, strategy_id: Optional[str] = None, limit: int = 10) -> List[StrategySignal]:
+    def get_recent_signals(self, strategy_id: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent signals from strategies"""
         try:
             if strategy_id:
@@ -274,31 +276,31 @@ class StrategyManager:
                     all_signals.extend(signals)
                 
                 # Sort by timestamp and return recent ones
-                all_signals.sort(key=lambda x: x.timestamp, reverse=True)
+                all_signals.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 return all_signals[:limit]
                 
         except Exception as e:
             logger.error(f"Error getting recent signals: {e}")
             return []
     
-    def filter_signals(self, signals: List[StrategySignal], 
+    def filter_signals(self, signals: List[Dict[str, Any]], 
                       min_confidence: float = 0.7,
                       allowed_symbols: Optional[Set[str]] = None,
-                      signal_types: Optional[Set[str]] = None) -> List[StrategySignal]:
+                      signal_types: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
         """Filter signals based on criteria"""
         filtered = []
         
         for signal in signals:
             # Confidence filter
-            if signal.confidence < min_confidence:
+            if signal.get('confidence', 0) < min_confidence:
                 continue
             
             # Symbol filter
-            if allowed_symbols and signal.symbol not in allowed_symbols:
+            if allowed_symbols and signal.get('symbol') not in allowed_symbols:
                 continue
             
             # Signal type filter
-            if signal_types and signal.signal_type.value not in signal_types:
+            if signal_types and signal.get('type') not in signal_types:
                 continue
             
             filtered.append(signal)
@@ -354,7 +356,7 @@ class StrategyManager:
 # Example usage and testing functions
 def create_example_strategies() -> List[Dict[str, Any]]:
     """Create example strategy configurations"""
-    from .base import TimeFrame
+
     
     strategies = [
         {
