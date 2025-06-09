@@ -10,6 +10,7 @@ import sys
 import logging
 import time
 from datetime import datetime
+from app.utils.timezone_utils import ist_now as datetime_now
 from pathlib import Path
 from typing import Optional
 
