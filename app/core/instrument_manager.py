@@ -60,10 +60,18 @@ class InstrumentManager:
         self.session: Optional[aiohttp.ClientSession] = None
         
         # AngelOne API configuration
-        self.api_key = os.getenv("ANGELONE_API_KEY_INSTRUMENTS", "your_api_key")
-        self.client_id = os.getenv("ANGELONE_CLIENT_ID_INSTRUMENTS", "your_client_id") 
-        self.password = os.getenv("ANGELONE_PASSWORD_INSTRUMENTS", "your_password")
-        self.totp_secret = os.getenv("ANGELONE_TOTP_SECRET_INSTRUMENTS", "your_totp_secret")
+        self.api_key = os.getenv("ANGELONE_API_KEY_INSTRUMENTS")
+        self.client_id = os.getenv("ANGELONE_CLIENT_ID_INSTRUMENTS")
+        self.password = os.getenv("ANGELONE_PASSWORD_INSTRUMENTS")
+        self.totp_secret = os.getenv("ANGELONE_TOTP_SECRET_INSTRUMENTS")
+        
+        # Validate required credentials
+        if not self.api_key:
+            raise ValueError("ANGELONE_API_KEY_INSTRUMENTS environment variable is required")
+        if not self.client_id:
+            raise ValueError("ANGELONE_CLIENT_ID_INSTRUMENTS environment variable is required")
+        if not self.password:
+            raise ValueError("ANGELONE_PASSWORD_INSTRUMENTS environment variable is required")
         
         # API endpoints
         self.base_url = "https://apiconnect.angelone.in"
