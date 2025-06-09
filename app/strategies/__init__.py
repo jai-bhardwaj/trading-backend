@@ -9,7 +9,8 @@ AutomaticStrategyRegistry system.
 """
 
 import logging
-from .base import BaseStrategy, StrategySignal, StrategyConfig, MarketData, AssetClass, TimeFrame, SignalType
+from .base_strategy import BaseStrategy
+from app.models.base import AssetClass
 from .registry import AutomaticStrategyRegistry, StrategyRegistry, StrategyMetadata
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,21 @@ def get_strategy_info():
         logger.error(f"Error getting strategy info: {e}")
         return {'error': str(e)}
 
+# Import strategy submodules to trigger registrations
+try:
+    # Import equity strategies to register them
+    from . import equity
+    logger.info("✅ Imported equity strategies module")
+    
+    # Import other strategy modules when they exist
+    # from . import derivatives
+    # from . import crypto
+    # from . import forex
+    # from . import commodities
+    
+except Exception as e:
+    logger.warning(f"⚠️ Error importing strategy submodules: {e}")
+
 # Auto-initialize when module is imported
 try:
     initialize_strategies()
@@ -132,12 +148,7 @@ except Exception as e:
 __all__ = [
     # Base framework
     'BaseStrategy',
-    'StrategySignal', 
-    'StrategyConfig',
-    'MarketData',
     'AssetClass',
-    'TimeFrame',
-    'SignalType',
     
     # Registry system
     'AutomaticStrategyRegistry',
