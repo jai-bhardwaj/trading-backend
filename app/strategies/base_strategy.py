@@ -3,47 +3,32 @@ Enhanced Base Strategy Class for Live Trading
 Works with the new cleaned schema and enhanced strategy execution system.
 """
 
+# Standard library imports
 import asyncio
 import json
 import logging
+import uuid
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
-from app.utils.timezone_utils import ist_now as datetime_now
-from decimal import Decimal
-import redis.asyncio as aioredis
 from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta
+from decimal import Decimal
 from enum import Enum
+from typing import Dict, List, Optional, Any, Tuple
+
+# Third-party imports
+import redis.asyncio as aioredis
 from sqlalchemy import text
 
-from app.database import get_database_manager, RedisKeys
+# Local imports
 from app.core.notification_service import NotificationService
+from app.database import get_database_manager, RedisKeys
+from app.models.base import (
+    AssetClass, OrderSide, OrderType, ProductType, OrderStatus
+)
+from app.strategies.signals import StrategySignal
+from app.utils.timezone_utils import ist_now as datetime_now
 
 logger = logging.getLogger(__name__)
-
-class OrderSide(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-
-class OrderType(Enum):
-    MARKET = "MARKET"
-    LIMIT = "LIMIT"
-    SL = "SL"        # Stop Loss
-    SL_M = "SL_M"    # Stop Loss Market
-
-class ProductType(Enum):
-    DELIVERY = "DELIVERY"
-    INTRADAY = "INTRADAY"
-    MARGIN = "MARGIN"
-
-class OrderStatus(Enum):
-    PENDING = "PENDING"
-    PLACED = "PLACED"
-    OPEN = "OPEN"
-    COMPLETE = "COMPLETE"
-    CANCELLED = "CANCELLED"
-    REJECTED = "REJECTED"
-    ERROR = "ERROR"
 
 @dataclass
 class Position:

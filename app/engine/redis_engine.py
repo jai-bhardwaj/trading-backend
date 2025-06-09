@@ -5,22 +5,31 @@ High-performance trading engine using Redis queues for order processing.
 Replaces the database polling approach with real-time queue processing.
 """
 
+# Standard library imports
 import asyncio
 import logging
 import signal
 import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import select
 
-from app.database import DatabaseManager
-from app.models.base import Order, OrderStatus, Strategy, StrategyStatus, User, BrokerConfig, OrderSide, OrderType, ProductType
-from app.queue import QueueManager, WorkerConfig, QueueConfig, QueuedOrder, PriorityOrderMetadata
-from app.queue.priority_queue import OrderUrgency
+# Third-party imports
+from sqlalchemy import select, and_
+from sqlalchemy.orm import Session
+
+# Local imports
 from app.brokers import get_broker_instance
-from app.strategies import AutomaticStrategyRegistry  # Import from strategies module, not registry directly
 from app.core.instrument_manager import get_instrument_manager
+from app.database import DatabaseManager
+from app.models.base import (
+    Order, OrderStatus, Strategy, StrategyStatus, User, BrokerConfig,
+    OrderSide, OrderType, ProductType
+)
+from app.queue import (
+    QueueManager, WorkerConfig, QueueConfig, QueuedOrder, PriorityOrderMetadata
+)
+from app.queue.priority_queue import OrderUrgency
+from app.strategies import AutomaticStrategyRegistry
 from app.utils.timezone_utils import ist_utcnow as datetime_now
 
 logger = logging.getLogger(__name__)
@@ -114,8 +123,9 @@ class RedisBasedTradingEngine:
                 available_strategies = AutomaticStrategyRegistry.list_strategies()
                 logger.info(f"📈 After direct init: {available_strategies}")
             
-            # Start queue manager
-            if not self.queue_manager.start():
+            # Start queue manager (async)
+            success = await self.queue_manager.start()
+            if not success:
                 logger.error("❌ Failed to start queue manager")
                 return False
             
@@ -147,8 +157,8 @@ class RedisBasedTradingEngine:
         # Stop background tasks
         await self._stop_background_tasks()
         
-        # Stop queue manager
-        self.queue_manager.stop()
+        # Stop queue manager (async)
+        await self.queue_manager.stop()
         
         # Calculate uptime
         if self.start_time:
@@ -464,14 +474,42 @@ class RedisBasedTradingEngine:
         return datetime_now() - last_execution >= interval
     
     async def _get_market_data(self, symbol: str, timeframe):
-        """Get market data with simulated data (live broker disabled for stability)"""
+        """Get live market data from Angel One - FINAL FIX"""
         try:
-            # For now, use simulated data to ensure system stability
-            # Live broker integration can be enabled later once all issues are resolved
-            logger.debug(f"📊 Generating simulated market data for {symbol}")
+            # Use simple Angel One broker
+            from fix_angel_one_final import get_global_angel_one
+            angel = await get_global_angel_one()
             
-            # Note: Live broker integration is temporarily disabled to avoid session binding issues
-            # This will be re-enabled once the broker authentication system is fully stabilized
+            if angel:
+                # Get live price
+                ltp = await angel.get_live_price(symbol)
+                
+                if ltp:
+                    # Create market data structure
+                    market_data = {
+                        'symbol': symbol,
+                        'timestamp': datetime_now(),
+                        'ltp': ltp,
+                        'close': ltp,
+                        'open': ltp,
+                        'high': ltp * 1.002,
+                        'low': ltp * 0.998,
+                        'volume': 100000,
+                        'exchange': "NSE",
+                        'source': 'angel_one_live'
+                    }
+                    
+                    logger.info(f"📊 🔴 LIVE: {symbol} = ₹{ltp} from Angel One")
+                    return market_data
+                else:
+                    logger.warning(f"⚠️ No live price for {symbol}")
+            else:
+                logger.warning(f"⚠️ Angel One broker not available")
+                        
+        except Exception as e:
+            logger.error(f"❌ Angel One market data failed for {symbol}: {e}")
+            
+            logger.debug(f"📊 Using simulated market data for {symbol} (live data unavailable)")
             
             # Fallback to simulated data if live data fails
             import random
