@@ -7,19 +7,27 @@ including health checks, performance tracking, risk monitoring, and alerting.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Tuple
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
+from typing import Dict, List, Optional, Any, AsyncGenerator
 
+# Database imports for async SQLAlchemy
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import DatabaseManager
-from app.models.base import (
-    Strategy as StrategyModel, Order, Trade, Position, Balance,
-    OrderStatus, StrategyStatus
+from app.models import (
+    Strategy, 
+    Trade, 
+    Order, 
+    Position, 
+    Balance,
+    OrderStatus,
+    StrategyStatus
 )
 from app.strategies.base_strategy import BaseStrategy
+from app.core.timezone_utils import now_ist, today_ist, IST
 
 logger = logging.getLogger(__name__)
 
@@ -171,11 +179,17 @@ class StrategyMonitor:
         """Update metrics for all active strategies"""
         db_manager = DatabaseManager()
         try:
+            # Initialize the database manager
+            await db_manager.initialize()
+            
             async with db_manager.get_session() as db:
                 # Get all active strategies
-                strategies = db.query(StrategyModel).filter(
-                    StrategyModel.status.in_([StrategyStatus.ACTIVE, StrategyStatus.PAUSED])
-                ).all()
+                result = await db.execute(
+                    select(Strategy).filter(
+                        Strategy.status.in_([StrategyStatus.ACTIVE, StrategyStatus.PAUSED])
+                    )
+                )
+                strategies = result.scalars().all()
                 
                 for strategy in strategies:
                     metrics = await self._calculate_strategy_metrics(db, strategy)
@@ -189,8 +203,14 @@ class StrategyMonitor:
                     
         except Exception as e:
             logger.error(f"Error in strategy monitoring: {e}")
+        finally:
+            # Clean up database manager
+            try:
+                await db_manager.close()
+            except Exception as cleanup_error:
+                logger.debug(f"Error closing database manager: {cleanup_error}")
     
-    async def _calculate_strategy_metrics(self, db: Session, strategy: StrategyModel) -> MonitoringMetrics:
+    async def _calculate_strategy_metrics(self, db: AsyncSession, strategy: Strategy) -> MonitoringMetrics:
         """Calculate comprehensive metrics for a strategy"""
         strategy_id = strategy.id
         
@@ -199,7 +219,7 @@ class StrategyMonitor:
             strategy_id=strategy_id,
             strategy_name=strategy.name,
             health_status=StrategyHealth.HEALTHY,
-            last_update=datetime.utcnow()
+            last_update=now_ist()
         )
         
         # Calculate performance metrics
@@ -216,14 +236,18 @@ class StrategyMonitor:
         
         return metrics
     
-    async def _calculate_performance_metrics(self, db: Session, strategy: StrategyModel, metrics: MonitoringMetrics):
+    async def _calculate_performance_metrics(self, db: AsyncSession, strategy: Strategy, metrics: MonitoringMetrics):
         """Calculate performance-related metrics"""
         try:
             # Get all trades for this strategy
-            trades = db.query(Trade).filter(
-                Trade.user_id == strategy.user_id,
-                # Add strategy_id filter when available
-            ).all()
+            trades = await db.execute(
+                select(Trade).filter(
+                    Trade.user_id == strategy.user_id,
+                    # Add strategy_id filter when available
+                )
+            )
+            
+            trades = trades.scalars().all()
             
             if trades:
                 # Calculate total P&L
@@ -231,8 +255,11 @@ class StrategyMonitor:
                 metrics.total_pnl = total_pnl
                 
                 # Calculate daily P&L
-                today = datetime.utcnow().date()
-                daily_trades = [t for t in trades if t.tradeTimestamp and t.tradeTimestamp.date() == today]
+                today = today_ist()
+                daily_trades = [t for t in trades if t.tradeTimestamp and (
+                    t.tradeTimestamp.replace(tzinfo=IST) if t.tradeTimestamp.tzinfo is None 
+                    else t.tradeTimestamp.astimezone(IST)
+                ).date() == today]
                 daily_pnl = sum(trade.netAmount - (trade.quantity * trade.price) for trade in daily_trades)
                 metrics.daily_pnl = daily_pnl
                 
@@ -245,7 +272,7 @@ class StrategyMonitor:
                     running_pnl = 0
                     peak = 0
                     max_dd = 0
-                    for trade in sorted(trades, key=lambda x: x.tradeTimestamp or datetime.min):
+                    for trade in sorted(trades, key=lambda x: x.tradeTimestamp or datetime.min.replace(tzinfo=IST)):
                         trade_pnl = trade.netAmount - (trade.quantity * trade.price)
                         running_pnl += trade_pnl
                         peak = max(peak, running_pnl)
@@ -256,49 +283,65 @@ class StrategyMonitor:
         except Exception as e:
             logger.error(f"Error calculating performance metrics for {strategy.name}: {e}")
     
-    async def _calculate_activity_metrics(self, db: Session, strategy: StrategyModel, metrics: MonitoringMetrics):
+    async def _calculate_activity_metrics(self, db: AsyncSession, strategy: Strategy, metrics: MonitoringMetrics):
         """Calculate activity-related metrics"""
         try:
             # Get orders for this strategy
-            orders = db.query(Order).filter(
-                Order.user_id == strategy.user_id,
-                Order.strategy_id == strategy.id
-            ).all()
+            orders = await db.execute(
+                select(Order).filter(
+                    Order.user_id == strategy.user_id,
+                    Order.strategy_id == strategy.id
+                )
+            )
+            
+            orders = orders.scalars().all()
             
             metrics.total_orders = len(orders)
             metrics.successful_orders = len([o for o in orders if o.status == OrderStatus.COMPLETE])
             metrics.failed_orders = len([o for o in orders if o.status in [OrderStatus.REJECTED, OrderStatus.ERROR]])
             
             # Get active positions
-            positions = db.query(Position).filter(
-                Position.user_id == strategy.user_id,
-                Position.quantity != 0
-            ).all()
+            positions = await db.execute(
+                select(Position).filter(
+                    Position.user_id == strategy.user_id,
+                    Position.quantity != 0
+                )
+            )
+            
+            positions = positions.scalars().all()
             
             metrics.active_positions = len(positions)
             
             # Get last order time
             if orders:
-                last_order = max(orders, key=lambda x: x.createdAt)
-                metrics.last_order_time = last_order.createdAt
+                last_order = max(orders, key=lambda x: x.created_at)
+                metrics.last_order_time = last_order.created_at
                 
         except Exception as e:
             logger.error(f"Error calculating activity metrics for {strategy.name}: {e}")
     
-    async def _calculate_risk_metrics(self, db: Session, strategy: StrategyModel, metrics: MonitoringMetrics):
+    async def _calculate_risk_metrics(self, db: AsyncSession, strategy: Strategy, metrics: MonitoringMetrics):
         """Calculate risk-related metrics"""
         try:
             # Get user balance
-            balance = db.query(Balance).filter(
-                Balance.user_id == strategy.user_id
-            ).first()
+            balance = await db.execute(
+                select(Balance).filter(
+                    Balance.user_id == strategy.user_id
+                )
+            )
+            
+            balance = balance.scalars().first()
             
             if balance:
                 # Calculate current exposure
-                positions = db.query(Position).filter(
-                    Position.user_id == strategy.user_id,
-                    Position.quantity != 0
-                ).all()
+                positions = await db.execute(
+                    select(Position).filter(
+                        Position.user_id == strategy.user_id,
+                        Position.quantity != 0
+                    )
+                )
+                
+                positions = positions.scalars().all()
                 
                 total_exposure = sum(abs(pos.quantity * pos.lastTradedPrice) for pos in positions)
                 metrics.current_exposure = total_exposure
@@ -312,7 +355,7 @@ class StrategyMonitor:
         except Exception as e:
             logger.error(f"Error calculating risk metrics for {strategy.name}: {e}")
     
-    async def _calculate_system_metrics(self, db: Session, strategy: StrategyModel, metrics: MonitoringMetrics):
+    async def _calculate_system_metrics(self, db: AsyncSession, strategy: Strategy, metrics: MonitoringMetrics):
         """Calculate system-related metrics"""
         try:
             # Last signal time (would need to be tracked in strategy logs)
@@ -361,7 +404,13 @@ class StrategyMonitor:
         
         # Check if strategy is offline
         if metrics.last_signal_time:
-            offline_minutes = (datetime.utcnow() - metrics.last_signal_time).total_seconds() / 60
+            # Ensure both times are in IST timezone
+            current_time = now_ist()
+            last_signal = (
+                metrics.last_signal_time.replace(tzinfo=IST) if metrics.last_signal_time.tzinfo is None
+                else metrics.last_signal_time.astimezone(IST)
+            )
+            offline_minutes = (current_time - last_signal).total_seconds() / 60
             if offline_minutes > thresholds['system']['max_offline_minutes']:
                 return StrategyHealth.OFFLINE
         
@@ -444,7 +493,7 @@ class StrategyMonitor:
         return {
             'total_strategies': len(self._strategy_metrics),
             'health_distribution': health_counts,
-            'last_update': datetime.utcnow().isoformat()
+            'last_update': now_ist().isoformat()
         }
     
     def get_performance_summary(self) -> Dict[str, Any]:
@@ -466,4 +515,23 @@ class StrategyMonitor:
 # Global monitor instance
 strategy_monitor = StrategyMonitor()
 
-# Ensure db_manager.initialize() is called at startup (e.g., in main()) 
+# Main execution when run as script
+if __name__ == "__main__":
+    import asyncio
+    import sys
+    
+    async def main():
+        """Main entry point for strategy monitor"""
+        try:
+            logger.info("🔍 Starting Strategy Monitor...")
+            await strategy_monitor.start_monitoring()
+        except KeyboardInterrupt:
+            logger.info("Received interrupt signal, shutting down...")
+        except Exception as e:
+            logger.error(f"Strategy monitor error: {e}")
+            sys.exit(1)
+        finally:
+            await strategy_monitor.stop_monitoring()
+    
+    # Run the monitor
+    asyncio.run(main()) 

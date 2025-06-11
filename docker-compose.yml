@@ -1,19 +1,19 @@
 version: '3.8'
 
 services:
-  # =====================================
-  # Core Infrastructure Services
-  # =====================================
-  
-  # Redis Cache & Queue (remove if using managed Redis)
+  # Redis Cache & Queue
   redis:
     image: redis:7-alpine
     container_name: trading-redis
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    environment:
+      - TZ=Asia/Kolkata
     volumes:
       - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     ports:
-      - "6380:6379"  # Changed port to avoid conflict
+      - "6379:6379"
     restart: unless-stopped
     networks:
       - trading-network
@@ -22,37 +22,35 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    profiles:
-      - local-redis  # Only start with --profile local-redis
 
-  # =====================================
-  # Trading Engine Core Services
-  # =====================================
-
-  # Main Trading Engine (replaces PM2 'trading-engine')
+  # Main Trading Engine
   trading-engine:
     build:
       context: .
       target: production
     container_name: trading-engine-core
+    env_file:
+      - .env
     environment:
-      - ENVIRONMENT=production
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=${DATABASE_URL}  # Use your DigitalOcean managed DB
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}  # Override in .env for managed Redis
-      - LOG_LEVEL=INFO
+      - TZ=Asia/Kolkata
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./config:/app/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python", "-c", "import redis; r = redis.Redis(host='redis', port=6379); r.ping()"]
       interval: 30s
       timeout: 10s
+      start_period: 5s
       retries: 3
     logging:
       driver: json-file
@@ -60,28 +58,31 @@ services:
         max-size: "100m"
         max-file: "5"
 
-  # Trading API (replaces PM2 'trading-api')
+  # Trading API
   trading-api:
     build:
       context: .
       target: production
     container_name: trading-api
     command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    env_file:
+      - .env
     environment:
-      - ENVIRONMENT=production
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=${DATABASE_URL}  # Use your DigitalOcean managed DB
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}  # Override in .env for managed Redis
-      - LOG_LEVEL=INFO
+      - TZ=Asia/Kolkata
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./config:/app/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     ports:
       - "8000:8000"
     depends_on:
-      - trading-engine
+      trading-engine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - trading-network
@@ -96,26 +97,29 @@ services:
         max-size: "100m"
         max-file: "5"
 
-  # Strategy Monitor (replaces PM2 'strategy-monitor')
+  # Strategy Monitor
   strategy-monitor:
     build:
       context: .
       target: production
     container_name: strategy-monitor
     command: ["python", "app/monitoring/strategy_monitor.py"]
+    env_file:
+      - .env
     environment:
-      - ENVIRONMENT=production
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=${DATABASE_URL}  # Use your DigitalOcean managed DB
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}  # Override in .env for managed Redis
-      - LOG_LEVEL=INFO
+      - TZ=Asia/Kolkata
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./config:/app/config
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
-      - trading-engine
+      trading-engine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - trading-network
@@ -130,136 +134,29 @@ services:
         max-size: "100m"
         max-file: "5"
 
-  # =====================================
-  # Monitoring & Observability
-  # =====================================
-
-  # Prometheus - Metrics Collection
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: trading-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    restart: unless-stopped
-    networks:
-      - trading-network
-      - monitoring
-    profiles:
-      - monitoring
-
-  # Grafana - Visualization Dashboard
-  grafana:
-    image: grafana/grafana:latest
-    container_name: trading-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana.ini:/etc/grafana/grafana.ini
-      - ./config/dashboards:/etc/grafana/provisioning/dashboards
-      - ./config/datasources:/etc/grafana/provisioning/datasources
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-trading123!}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-worldmap-panel
-    restart: unless-stopped
-    networks:
-      - trading-network
-      - monitoring
-    depends_on:
-      - prometheus
-    profiles:
-      - monitoring
-
-  # Node Exporter - System Metrics
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: trading-node-exporter
-    ports:
-      - "9100:9100"
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/host:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/host'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-    restart: unless-stopped
-    networks:
-      - monitoring
-    profiles:
-      - monitoring
-
-  # Redis Exporter - Redis Metrics (only if using local Redis)
+  # Redis Exporter for Monitoring
   redis-exporter:
     image: oliver006/redis_exporter:latest
     container_name: trading-redis-exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+      - TZ=Asia/Kolkata
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     ports:
       - "9121:9121"
-    environment:
-      - REDIS_ADDR=${REDIS_URL:-redis://redis:6379}
-    restart: unless-stopped
-    networks:
-      - trading-network
-      - monitoring
-    profiles:
-      - monitoring
-      - local-redis
-
-  # =====================================
-  # Utility Services
-  # =====================================
-
-  # NGINX Reverse Proxy (Optional)
-  nginx:
-    image: nginx:alpine
-    container_name: trading-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/ssl:/etc/nginx/ssl:ro
     depends_on:
-      - trading-api
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - trading-network
-    profiles:
-      - production
 
-# =====================================
-# Volumes
-# =====================================
-volumes:
-  redis_data:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
-
-# =====================================
-# Networks
-# =====================================
 networks:
   trading-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-  monitoring:
-    driver: bridge 
+
+volumes:
+  redis_data:
+    driver: local

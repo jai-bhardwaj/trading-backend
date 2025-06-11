@@ -238,7 +238,10 @@ class AppSettings(BaseSettings):
             echo=getenv("DB_ECHO", "false").lower() == "true"
         )
         
-        self.redis = RedisConfig()
+        # Initialize Redis config with explicit environment variable reading
+        redis_url = getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis = RedisConfig(url=redis_url)
+        
         self.trading_engine = TradingEngineConfig()
         self.instruments = InstrumentConfig()
         self.security = SecurityConfig()

@@ -1,18 +1,19 @@
-"""Circuit breaker pattern implementation for fault tolerance."""
+"""
+Circuit breaker pattern implementation for handling failures gracefully.
+Provides automatic failure detection and recovery mechanisms.
+"""
 
 import asyncio
 import time
-import logging
-from typing import Any, Callable, Dict, Optional
-from enum import Enum
+import redis
+from datetime import datetime
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-import redis.asyncio as redis
-
+from enum import Enum
+from typing import Dict, Any, Callable, Optional
 from app.core.config import get_settings
+import logging
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 class CircuitState(Enum):
     """Circuit breaker states."""
@@ -45,7 +46,9 @@ class CircuitBreaker:
     async def _get_redis_client(self):
         """Get Redis client for state persistence."""
         if not self.redis_client:
-            self.redis_client = redis.Redis.from_url(settings.redis_url)
+            settings = get_settings()
+            redis_url = settings.redis.url  # Fix: Use proper Redis config
+            self.redis_client = redis.Redis.from_url(redis_url)
         return self.redis_client
     
     async def _get_state(self) -> Dict[str, Any]:

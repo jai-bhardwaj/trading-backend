@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from enum import Enum
 import redis.asyncio as redis
 from sqlalchemy import text
@@ -20,7 +20,10 @@ from app.models.base import (
     NotificationType as ModelNotificationType, 
     NotificationStatus, Notification
 )
-from app.strategies.signals import StrategySignal
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from app.strategies.signals import StrategySignal
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +449,47 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Failed to cleanup old notifications: {e}")
 
+    async def send_signal_notification(self, user_id: str, signal: "StrategySignal", order_id: str):
+        """Send notification for strategy signal"""
+        try:
+            await self.send_realtime_notification(
+                user_id=user_id,
+                type=NotificationType.STRATEGY_STARTED.value,
+                title=f"Trading Signal: {signal.symbol}",
+                message=f"Strategy generated {signal.signal_type.value} signal for {signal.symbol} with {signal.confidence:.1%} confidence",
+                data={
+                    'signal_type': signal.signal_type.value,
+                    'symbol': signal.symbol,
+                    'confidence': signal.confidence,
+                    'quantity': signal.quantity,
+                    'order_id': order_id
+                }
+            )
+            logger.info(f"📩 Sent signal notification for {signal.symbol}")
+        except Exception as e:
+            logger.error(f"Error sending signal notification: {e}")
+
+    async def send_order_notification(self, user_id: str, order, event: str):
+        """Send notification for order events"""
+        try:
+            notification_type = NotificationType.ORDER_EXECUTED if event == "EXECUTED" else NotificationType.ORDER_CANCELLED
+            await self.send_realtime_notification(
+                user_id=user_id,
+                type=notification_type.value,
+                title=f"Order {event}: {order.symbol}",
+                message=f"Order {order.id} for {order.symbol} has been {event.lower()}",
+                data={
+                    'order_id': order.id,
+                    'symbol': order.symbol,
+                    'side': order.side.value,
+                    'quantity': order.quantity,
+                    'status': order.status.value
+                }
+            )
+            logger.info(f"📩 Sent order notification for {order.symbol}")
+        except Exception as e:
+            logger.error(f"Error sending order notification: {e}")
+
 # Global notification service instance
 notification_service = NotificationService()
 
@@ -457,56 +501,4 @@ async def send_notification(user_id: str, type: str, title: str, message: str,
 
 async def get_user_notifications(user_id: str, limit: int = 50):
     """Get user notifications."""
-    return await notification_service.get_user_notifications(user_id, limit)
-
-async def send_signal_notification(self, user_id: str, signal: StrategySignal, order_id: str):
-    """Send notification for strategy signal"""
-    try:
-        async with get_database_manager().get_async_session() as db:
-            notification = Notification(
-                user_id=user_id,
-                type=NotificationType.STRATEGY_STARTED,
-                title=f"Trading Signal: {signal.symbol}",
-                message=f"Strategy generated {signal.signal_type.value} signal for {signal.symbol} with {signal.confidence:.1%} confidence",
-                data={
-                    'signal_type': signal.signal_type.value,
-                    'symbol': signal.symbol,
-                    'confidence': signal.confidence,
-                    'quantity': signal.quantity,
-                    'order_id': order_id
-                }
-            )
-            
-            db.add(notification)
-            await db.commit()
-            
-            logger.info(f"📩 Sent signal notification for {signal.symbol}")
-    
-    except Exception as e:
-        logger.error(f"Error sending signal notification: {e}")
-
-async def send_order_notification(self, user_id: str, order: Order, event: str):
-    """Send notification for order events"""
-    try:
-        async with get_database_manager().get_async_session() as db:
-            notification = Notification(
-                user_id=user_id,
-                type=NotificationType.ORDER_EXECUTED if event == "EXECUTED" else NotificationType.ORDER_CANCELLED,
-                title=f"Order {event}: {order.symbol}",
-                message=f"Order {order.id} for {order.symbol} has been {event.lower()}",
-                data={
-                    'order_id': order.id,
-                    'symbol': order.symbol,
-                    'side': order.side.value,
-                    'quantity': order.quantity,
-                    'status': order.status.value
-                }
-            )
-            
-            db.add(notification)
-            await db.commit()
-            
-            logger.info(f"📩 Sent order notification for {order.symbol}")
-    
-    except Exception as e:
-        logger.error(f"Error sending order notification: {e}") 
+    return await notification_service.get_user_notifications(user_id, limit) 

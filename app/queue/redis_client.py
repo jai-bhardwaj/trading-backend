@@ -17,10 +17,40 @@ class RedisConfig:
     """Redis configuration settings"""
     
     def __init__(self):
-        self.host = os.getenv("REDIS_HOST", "localhost")
-        self.port = int(os.getenv("REDIS_PORT", 6379))
-        self.db = int(os.getenv("REDIS_DB", 0))
-        self.password = os.getenv("REDIS_PASSWORD")
+        # Parse REDIS_URL first, then fall back to individual variables
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url and redis_url.startswith("redis://"):
+            # Parse Redis URL (e.g., redis://redis:6379/0)
+            import re
+            match = re.match(r'redis://(?:([^:@]+):([^@]+)@)?([^:/]+):(\d+)/(\d+)', redis_url)
+            if match:
+                _, password, host, port, db = match.groups()
+                self.host = host
+                self.port = int(port)
+                self.db = int(db)
+                self.password = password
+            else:
+                # Simple redis://host:port format
+                match = re.match(r'redis://([^:/]+):(\d+)', redis_url)
+                if match:
+                    host, port = match.groups()
+                    self.host = host
+                    self.port = int(port)
+                    self.db = 0
+                    self.password = None
+                else:
+                    # Fallback to environment variables
+                    self.host = os.getenv("REDIS_HOST", "localhost")
+                    self.port = int(os.getenv("REDIS_PORT", 6379))
+                    self.db = int(os.getenv("REDIS_DB", 0))
+                    self.password = os.getenv("REDIS_PASSWORD")
+        else:
+            # Use individual environment variables
+            self.host = os.getenv("REDIS_HOST", "localhost")
+            self.port = int(os.getenv("REDIS_PORT", 6379))
+            self.db = int(os.getenv("REDIS_DB", 0))
+            self.password = os.getenv("REDIS_PASSWORD")
+            
         self.max_connections = int(os.getenv("REDIS_MAX_CONNECTIONS", 20))
         self.socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", 30.0))
         self.socket_connect_timeout = float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", 30.0))

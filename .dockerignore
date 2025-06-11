@@ -9,7 +9,7 @@
 **/*.pyo
 **/*.pyd
 **/.pytest_cache/
-**/test_*.py
+# Removed **/test_*.py to allow test_strategy.py
 **/tests/
 **/*_test.py
 stress_test_comprehensive.py
@@ -133,4 +133,81 @@ htmlcov/
 Dockerfile
 docker-compose*.yml
 docker-deploy.sh
-docker-manage.sh 
+docker-manage.sh
+
+# =====================================
+# Documentation
+# =====================================
+*.rst
+.github/
+
+# =====================================
+# Python
+# =====================================
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# =====================================
+# Logs
+# =====================================
+*.out
+
+# =====================================
+# Data directories (exclude large data files but keep structure)
+# =====================================
+data/*.csv
+data/*.json
+data/*.db
+data/*.sqlite
+
+# =====================================
+# Environment files (will be provided by docker-compose)
+# =====================================
+.env.local
+.env.development
+.env.test
+*.env.backup
+
+# =====================================
+# Docker files
+# =====================================
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# =====================================
+# Scripts and utilities
+# =====================================
+*.sh
+!scripts/
+
+# =====================================
+# Backup files
+# =====================================
+*.bak
+
+# =====================================
+# Unit test files (but not trading strategy files)
+# =====================================
+**/tests/
+**/*_test.py
+**/unit_test_*.py
+**/integration_test_*.py
+stress_test_comprehensive.py
+redis_performance_test.py 

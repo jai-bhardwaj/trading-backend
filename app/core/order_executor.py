@@ -216,7 +216,7 @@ class OrderExecutor:
                     "EXECUTION_COMPLETED",
                     {
                         'success': result.success,
-                        'status': result.status.value,
+                        'status': result.status.value if hasattr(result.status, 'value') else str(result.status),
                         'execution_time': result.execution_time,
                         'retry_count': result.retry_count
                     }
@@ -354,13 +354,18 @@ class OrderExecutor:
     
     def _convert_to_broker_order(self, order: Order) -> OrderInterface:
         """Convert database order to broker order format"""
+        # Safe enum value extraction
+        side_value = order.side.value if hasattr(order.side, 'value') else str(order.side)
+        order_type_value = order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type)
+        product_type_value = order.product_type.value if hasattr(order.product_type, 'value') else str(order.product_type)
+        
         return OrderInterface(
             user_id=order.user_id,
             symbol=order.symbol,
             exchange=order.exchange,
-            side=order.side.value,
-            order_type=order.order_type.value,
-            product_type=order.product_type.value,
+            side=side_value,
+            order_type=order_type_value,
+            product_type=product_type_value,
             quantity=order.quantity,
             price=order.price,
             trigger_price=order.trigger_price,
@@ -386,13 +391,43 @@ class OrderExecutor:
         return error_code not in non_retryable
     
     async def _get_broker_instance(self, db, user_id: str) -> Optional[Any]:
-        """Get simple Angel One broker - FINAL FIX"""
+        """Get proper Angel One broker instance"""
         try:
-            from fix_angel_one_final import get_global_angel_one
-            broker = await get_global_angel_one()
-            if broker:
-                logger.info(f"✅ Using simple Angel One broker for user {user_id}")
-            return broker
+            from app.brokers.angelone_new import AngelOneBroker
+            from app.models.base import BrokerConfig as DBBrokerConfig
+            from app.models.base import BrokerName
+            import os
+            
+            # Create broker config from environment variables
+            broker_config = DBBrokerConfig(
+                id=f"angel_one_order_{user_id}",
+                user_id=user_id,
+                broker_name=BrokerName.ANGEL_ONE,
+                api_key=os.getenv("ANGEL_ONE_API_KEY", ""),
+                client_id=os.getenv("ANGEL_ONE_CLIENT_ID", ""),
+                password=os.getenv("ANGEL_ONE_PASSWORD", ""),
+                totp_secret=os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+                is_active=True
+            )
+            
+            # Check if credentials are available
+            if not all([broker_config.api_key, broker_config.client_id, broker_config.password]):
+                logger.warning(f"⚠️ Angel One credentials not configured for user {user_id}")
+                return None
+            
+            # Create and authenticate broker
+            angel_broker = AngelOneBroker(broker_config)
+            
+            if not angel_broker.is_authenticated:
+                await angel_broker.authenticate()
+            
+            if angel_broker.is_authenticated:
+                logger.info(f"✅ Using Angel One broker for user {user_id}")
+                return angel_broker
+            else:
+                logger.warning(f"⚠️ Angel One authentication failed for user {user_id}")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Failed to get Angel One broker: {e}")
             return None
@@ -441,7 +476,8 @@ class OrderExecutor:
         try:
             order.status = status
             order.status_message = message
-            order.updated_at = datetime_now()
+            # Convert timezone-aware datetime to naive for database
+            order.updated_at = datetime_now().replace(tzinfo=None)
             
             if broker_order_id:
                 order.broker_order_id = broker_order_id
@@ -466,7 +502,7 @@ class OrderExecutor:
                     quantity=order.quantity,
                     price=order.price or 0,
                     broker_order_id=result.broker_order_id,
-                    execution_time=datetime_now(),
+                    execution_time=datetime_now().replace(tzinfo=None),
                     pnl=0.0  # Will be calculated later
                 )
                 db.add(trade)
@@ -504,11 +540,32 @@ class OrderExecutor:
         avg_execution_time = sum(r.execution_time for r in self.execution_history) / total_executions
         avg_retry_count = sum(r.retry_count for r in self.execution_history) / total_executions
         
-        # Calculate status breakdown
+        # Calculate status breakdown with safe enum value extraction
         status_breakdown = {}
         for result in self.execution_history:
-            status = result.status.value
-            status_breakdown[status] = status_breakdown.get(status, 0) + 1
+            try:
+                # Safe enum value extraction
+                if hasattr(result.status, 'value'):
+                    status = result.status.value
+                else:
+                    status = str(result.status)
+                status_breakdown[status] = status_breakdown.get(status, 0) + 1
+            except Exception as e:
+                logger.warning(f"Error processing status for statistics: {e}")
+                status = "UNKNOWN"
+                status_breakdown[status] = status_breakdown.get(status, 0) + 1
+        
+        # Safe circuit breaker state extraction
+        circuit_breaker_states = {}
+        for broker, cb in self.circuit_breakers.items():
+            try:
+                if hasattr(cb.state, 'value'):
+                    circuit_breaker_states[broker] = cb.state.value
+                else:
+                    circuit_breaker_states[broker] = str(cb.state)
+            except Exception as e:
+                logger.warning(f"Error processing circuit breaker state for {broker}: {e}")
+                circuit_breaker_states[broker] = "UNKNOWN"
         
         return {
             'total_executions': total_executions,
@@ -518,9 +575,7 @@ class OrderExecutor:
             'average_execution_time': avg_execution_time,
             'average_retry_count': avg_retry_count,
             'status_breakdown': status_breakdown,
-            'circuit_breaker_states': {
-                broker: cb.state.value for broker, cb in self.circuit_breakers.items()
-            }
+            'circuit_breaker_states': circuit_breaker_states
         }
     
     async def cancel_order(self, order_id: str) -> ExecutionResult:

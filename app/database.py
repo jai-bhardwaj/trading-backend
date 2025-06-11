@@ -189,6 +189,7 @@ class DatabaseManager:
             )
             
             logger.info(f"📊 Redis configured with timeout={self.settings.redis.socket_timeout}s")
+            logger.info(f"🔗 Redis connected to: {redis_url}")
             
         except Exception as e:
             logger.error(f"❌ Failed to setup Redis connection: {e}")
@@ -247,45 +248,31 @@ class DatabaseManager:
         session = None
         try:
             session = self.async_session_factory()
-            
-            # Log session creation in debug mode
             if self.settings.debug:
-                logger.debug("🔄 Database session created")
+                logger.debug("🔓 Database session created")
             
             yield session
             
-            # Commit if no exception occurred
-            await session.commit()
-            
-            if self.settings.debug:
-                logger.debug("✅ Database session committed")
+            # Commit if transaction is active
+            if session.in_transaction():
+                await session.commit()
+                if self.settings.debug:
+                    logger.debug("✅ Transaction committed")
                 
         except SQLAlchemyError as e:
-            if session:
+            # Handle SQLAlchemy-specific errors
+            if session and session.in_transaction():
                 try:
                     await session.rollback()
-                    logger.warning("🔄 Database session rolled back due to error")
+                    logger.warning(f"🔄 Transaction rolled back due to error: {e}")
                 except Exception as rollback_error:
-                    logger.error(f"❌ Error during rollback: {rollback_error}")
+                    logger.error(f"❌ Failed to rollback transaction: {rollback_error}")
             
-            # Log the specific SQLAlchemy error with more context
-            error_msg = f"Database session error: {e}"
-            logger.error(error_msg)
-            raise
-            
-        except Exception as e:
-            # Handle session cleanup
-            if session:
-                try:
-                    await session.rollback()
-                    logger.warning("🔄 Database session rolled back due to unexpected error")
-                except Exception as rollback_error:
-                    logger.error(f"❌ Error during rollback: {rollback_error}")
-            
-            # Check if this is a connection/event loop issue
-            error_str = str(e)
-            if ("attached to a different loop" in error_str or 
-                "connection slots are reserved" in error_str or
+            # Log specific error types for better debugging
+            error_str = str(e).lower()
+            if ("connection" in error_str or 
+                "disconnect" in error_str or
+                "protocol error" in error_str or
                 "unknown protocol state" in error_str):
                 logger.warning(f"🔄 Database connection/loop issue: {e}")
             else:
@@ -300,6 +287,18 @@ class DatabaseManager:
                         logger.debug("🔒 Database session closed")
                 except Exception as close_error:
                     logger.error(f"❌ Error closing session: {close_error}")
+
+    # Alias for compatibility with existing code
+    @asynccontextmanager
+    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+        """
+        Alias for get_async_session() for compatibility with existing code
+        
+        Yields:
+            AsyncSession: Database session
+        """
+        async with self.get_async_session() as session:
+            yield session
     
     async def get_redis(self) -> redis.Redis:
         """

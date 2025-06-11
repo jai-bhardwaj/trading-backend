@@ -1,5 +1,7 @@
 # 🚀 Production Trading Engine Dockerfile
-FROM python:3.12-slim-bullseye
+
+# Base stage with common dependencies
+FROM python:3.12-slim-bullseye as base
 
 LABEL maintainer="Trading Engine Team"
 LABEL version="2.0.0"
@@ -11,9 +13,6 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     DEBIAN_FRONTEND=noninteractive
-
-# Create non-root user for security
-RUN groupadd -r trading && useradd -r -g trading trading
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -33,18 +32,23 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY app/ ./app/
-COPY main.py .
-COPY manage.py .
-COPY create_tables.py .
-COPY migrations/ ./migrations/
-COPY scripts/ ./scripts/
+# Development stage
+FROM base as development
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+# Add development tools if needed
+CMD ["python", "main.py"]
 
-# Copy configuration
-COPY .env.example .env
+# Production stage
+FROM base as production
 
-# Create necessary directories
+# Create non-root user for security
+RUN groupadd -r trading && useradd -r -g trading trading
+
+# Copy all application code
+COPY . .
+
+# Create necessary directories and set permissions
 RUN mkdir -p /app/logs /app/data && \
     chown -R trading:trading /app
 

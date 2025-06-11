@@ -435,10 +435,14 @@ class BrokerInterface(ABC):
             raise OrderError(f"Exchange {order.exchange} not supported by {self.broker_name.value}")
         
         if order.product_type not in self.supported_product_types:
-            raise OrderError(f"Product type {order.product_type.value} not supported by {self.broker_name.value}")
+            product_type_str = order.product_type.value if hasattr(order.product_type, 'value') else str(order.product_type)
+            broker_name_str = self.broker_name.value if hasattr(self.broker_name, 'value') else str(self.broker_name)
+            raise OrderError(f"Product type {product_type_str} not supported by {broker_name_str}")
         
         if order.order_type not in self.supported_order_types:
-            raise OrderError(f"Order type {order.order_type.value} not supported by {self.broker_name.value}")
+            order_type_str = order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type)
+            broker_name_str = self.broker_name.value if hasattr(self.broker_name, 'value') else str(self.broker_name)
+            raise OrderError(f"Order type {order_type_str} not supported by {broker_name_str}")
         
         return True
     

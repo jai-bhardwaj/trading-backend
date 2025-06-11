@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, time, timedelta
 from ..base_strategy import BaseStrategy
 from ..registry import AutomaticStrategyRegistry
-from app.utils.timezone_utils import ist_now as datetime_now, ISTDateTime
+from app.core.timezone_utils import now_ist, is_market_hours
 from app.models.base import AssetClass
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class TestStrategy(BaseStrategy):
     async def on_initialize(self):
         """Initialize test strategy parameters"""
         # Test configuration
-        self.order_interval_minutes = self.parameters.get('order_interval_minutes', 1)  # Generate orders every 1 minute
+        self.order_interval_minutes = self.parameters.get('order_interval_minutes', 10)  # Generate orders every 10 minutes
         self.test_symbols = self.parameters.get('test_symbols', ['RELIANCE-EQ'])
         self.test_quantity = self.parameters.get('test_quantity', 1)
         self.max_test_orders = self.parameters.get('max_test_orders', 50)  # Increased for more testing
@@ -43,7 +43,7 @@ class TestStrategy(BaseStrategy):
         self.last_order_time = None
         self.order_count = 0
         self.current_side = 'BUY'  # Start with BUY orders
-        self.test_start_time = datetime_now()
+        self.test_start_time = now_ist()
         
         # Trading hours (9:15 AM to 3:30 PM IST)
         self.market_start = time(9, 15)
@@ -58,14 +58,14 @@ class TestStrategy(BaseStrategy):
     
     async def process_market_data(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process market data and generate test signals"""
-        current_time = datetime_now()
+        current_time = now_ist()
         
         # Check if we've reached max orders
         if self.order_count >= self.max_test_orders:
             return None
         
         # Trading hours check disabled for testing - generate orders 24/7 for system testing
-        # if not ISTDateTime.is_market_hours(current_time):
+        # if not is_market_hours(current_time):
         #     return None
         
         # Check if it's time for next order
@@ -115,7 +115,7 @@ class TestStrategy(BaseStrategy):
     async def generate_signals(self) -> List[Dict[str, Any]]:
         """Generate test signals at configured intervals"""
         signals = []
-        current_time = datetime_now()
+        current_time = now_ist()
         
         # Check if we've reached max orders
         if self.order_count >= self.max_test_orders:
@@ -123,7 +123,7 @@ class TestStrategy(BaseStrategy):
             return signals
         
         # Trading hours check disabled for testing - generate orders 24/7 for system testing
-        # if not ISTDateTime.is_market_hours(current_time):
+        # if not is_market_hours(current_time):
         #     return signals
         
         # Check if it's time for next order
@@ -183,7 +183,7 @@ class TestStrategy(BaseStrategy):
     
     async def on_strategy_iteration(self):
         """Called after each strategy iteration"""
-        current_time = datetime_now()
+        current_time = now_ist()
         runtime_minutes = (current_time - self.test_start_time).total_seconds() / 60
         
         # Calculate next order time
@@ -228,7 +228,7 @@ class TestStrategy(BaseStrategy):
     
     def get_test_summary(self) -> Dict[str, Any]:
         """Get a summary of test execution"""
-        current_time = datetime_now()
+        current_time = now_ist()
         runtime_minutes = (current_time - self.test_start_time).total_seconds() / 60
         
         return {

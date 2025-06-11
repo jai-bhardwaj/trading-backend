@@ -264,9 +264,9 @@ class AngelOneBroker(BrokerInterface):
         order_log_data = {
             "symbol": order.symbol,
             "exchange": order.exchange,
-            "side": order.side.value,
-            "order_type": order.order_type.value,
-            "product_type": order.product_type.value,
+            "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+            "order_type": order.order_type.value if hasattr(order.order_type, 'value') else str(order.order_type),
+            "product_type": order.product_type.value if hasattr(order.product_type, 'value') else str(order.product_type),
             "quantity": order.quantity,
             "price": order.price,
             "trigger_price": getattr(order, 'trigger_price', None),

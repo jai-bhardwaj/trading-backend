@@ -386,39 +386,87 @@ class OrderProcessor:
             logger.info(f"🏁 Order processor {self.worker_id} stopped. Processed: {self.processed_count}, Errors: {self.error_count}")
     
     async def _process_order(self, order: QueuedOrder):
-        """Process a single order (Redis-only, no DB access)"""
+        """Process a single order using REAL Angel One broker execution"""
         try:
             logger.info(f"🔄 Processing order {order.order_id} ({order.symbol} {order.side} {order.quantity})")
             
-            # Update order status in Redis only
+            # Update order status in Redis
             redis_client = get_redis_connection()
             order_key = f"order:{order.order_id}"
             
-            # Simulate order processing (replace with actual broker logic)
+            from datetime import datetime
+            from app.utils.timezone_utils import ist_utcnow as datetime_now
+            
             redis_client.hset(order_key, mapping={
                 "status": "PROCESSING",
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime_now().isoformat(),
                 "worker_id": self.worker_id
             })
             
             # Mark order as dirty for DB sync
             redis_client.sadd("orders:pending_sync", order.order_id)
             
-            # Simulate successful execution (you can replace this with real broker calls)
-            await asyncio.sleep(0.1)  # Simulate processing time
-            
-            # Update final status in Redis
-            redis_client.hset(order_key, mapping={
-                "status": "COMPLETED",
-                "executed_at": datetime.utcnow().isoformat(),
-                "filled_quantity": str(order.quantity)
-            })
-            
-            # Mark as completed (Redis only)
-            from app.core.order_executor import ExecutionResult
-            result = ExecutionResult(success=True, status="COMPLETED", message="Order executed via Redis")
-            self.queue.complete_order(order.order_id, result)
-            logger.info(f"✅ Order {order.order_id} executed successfully (Redis-only)")
+            # Use OrderExecutor for REAL broker execution - with proper async handling
+            try:
+                from app.core.order_executor import OrderExecutor
+                
+                # Create executor and execute order
+                order_executor = OrderExecutor()
+                execution_result = await order_executor.execute_order(order.order_id)
+                
+                if execution_result.success:
+                    # Order placed successfully with Angel One
+                    redis_client.hset(order_key, mapping={
+                        "status": "PLACED",  # Use valid enum value
+                        "broker_order_id": execution_result.broker_order_id or "",
+                        "executed_at": datetime_now().isoformat(),
+                        "message": execution_result.message or "Order placed with Angel One"
+                    })
+                    
+                    from app.core.order_executor import ExecutionResult
+                    result = ExecutionResult(
+                        success=True, 
+                        status="PLACED",  # Use valid enum value
+                        message=f"Order placed with Angel One - Broker ID: {execution_result.broker_order_id}",
+                        broker_order_id=execution_result.broker_order_id
+                    )
+                    self.queue.complete_order(order.order_id, result)
+                    logger.info(f"✅ Order {order.order_id} placed with Angel One successfully! Broker ID: {execution_result.broker_order_id}")
+                    
+                else:
+                    # Order rejected by Angel One or risk checks
+                    redis_client.hset(order_key, mapping={
+                        "status": "REJECTED",
+                        "rejection_reason": execution_result.message or "Order rejected",
+                        "updated_at": datetime_now().isoformat()
+                    })
+                    
+                    from app.core.order_executor import ExecutionResult
+                    result = ExecutionResult(
+                        success=False, 
+                        status="REJECTED", 
+                        message=execution_result.message or "Order rejected"
+                    )
+                    self.queue.complete_order(order.order_id, result)
+                    logger.error(f"❌ Order {order.order_id} rejected: {execution_result.message}")
+                    
+            except Exception as broker_error:
+                # Handle broker execution errors
+                logger.error(f"❌ Broker execution error for order {order.order_id}: {broker_error}")
+                
+                redis_client.hset(order_key, mapping={
+                    "status": "FAILED",
+                    "error_message": f"Broker execution failed: {str(broker_error)}",
+                    "updated_at": datetime_now().isoformat()
+                })
+                
+                from app.core.order_executor import ExecutionResult
+                result = ExecutionResult(
+                    success=False, 
+                    status="FAILED", 
+                    message=f"Broker execution failed: {str(broker_error)}"
+                )
+                self.queue.complete_order(order.order_id, result)
                 
         except Exception as e:
             logger.error(f"❌ Error processing order {order.order_id}: {e}")
@@ -428,10 +476,13 @@ class OrderProcessor:
             try:
                 redis_client = get_redis_connection()
                 order_key = f"order:{order.order_id}"
+                
+                from app.utils.timezone_utils import ist_utcnow as datetime_now
+                
                 redis_client.hset(order_key, mapping={
                     "status": "ERROR",
                     "error_message": str(e),
-                    "updated_at": datetime.utcnow().isoformat()
+                    "updated_at": datetime_now().isoformat()
                 })
                 redis_client.sadd("orders:pending_sync", order.order_id)
                 

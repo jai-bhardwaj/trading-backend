@@ -2,7 +2,7 @@
     "strategy_name": "test_strategy",
     "description": "Test Strategy Configuration Example",
     "config": {
-        "order_interval_minutes": 2,
+        "order_interval_minutes": 10,
         "test_symbols": [
             "RELIANCE"
         ],

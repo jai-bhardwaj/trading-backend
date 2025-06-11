@@ -75,16 +75,40 @@ def convert_redis_to_db_fields(redis_data: Dict[str, Any]) -> Dict[str, Any]:
     
     if 'status' in decoded_data:
         try:
-            converted['status'] = OrderStatus(decoded_data['status'])
+            status_value = decoded_data['status']
+            
+            # Map Redis status values to valid OrderStatus enum values
+            status_mapping = {
+                'PROCESSING': 'QUEUED',  # Map PROCESSING to QUEUED
+                'BROKER_ACCEPTED': 'PLACED',  # Map BROKER_ACCEPTED to PLACED 
+                'COMPLETED': 'COMPLETE',  # Map COMPLETED to COMPLETE
+                'FAILED': 'ERROR',  # Map FAILED to ERROR
+                # Add any other mappings as needed
+            }
+            
+            # Use mapping if available, otherwise use original value
+            mapped_status = status_mapping.get(status_value, status_value)
+            converted['status'] = OrderStatus(mapped_status)
         except ValueError:
-            logger.warning(f"Invalid OrderStatus: {decoded_data['status']}")
+            logger.warning(f"Invalid OrderStatus: {decoded_data['status']} - using PENDING as default")
+            converted['status'] = OrderStatus.PENDING
     
     # DateTime fields
     datetime_fields = ['placed_at', 'executed_at', 'cancelled_at', 'created_at', 'updated_at']
     for field in datetime_fields:
         if field in decoded_data:
             try:
-                converted[field] = datetime.fromisoformat(decoded_data[field].replace('Z', '+00:00'))
+                # Parse the datetime and convert timezone-aware to naive
+                dt_value = datetime.fromisoformat(decoded_data[field].replace('Z', '+00:00'))
+                
+                # Convert to naive datetime for database storage
+                if dt_value.tzinfo is not None:
+                    # If timezone-aware, convert to naive (removing timezone info)
+                    converted[field] = dt_value.replace(tzinfo=None)
+                else:
+                    # Already naive
+                    converted[field] = dt_value
+                    
             except (ValueError, TypeError):
                 logger.warning(f"Invalid datetime value for {field}: {decoded_data[field]}")
     

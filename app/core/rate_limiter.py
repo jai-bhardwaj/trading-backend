@@ -77,12 +77,24 @@ class RateLimiter:
     async def initialize(self):
         """Initialize the rate limiter"""
         try:
-            self.redis_client = await get_database_manager().get_redis()
-            self.initialized = True
-            logger.info("Rate limiter initialized successfully")
+            db_manager = get_database_manager()
+            if not db_manager:
+                logger.warning("Database manager not available, rate limiter will operate in degraded mode")
+                self.initialized = False
+                return
+            
+            self.redis_client = await db_manager.get_redis()
+            if self.redis_client:
+                # Test Redis connection
+                await self.redis_client.ping()
+                self.initialized = True
+                logger.info("✅ Rate limiter initialized successfully with Redis")
+            else:
+                logger.warning("Redis client not available, rate limiter will operate in degraded mode")
+                self.initialized = False
         except Exception as e:
-            logger.error(f"Failed to initialize rate limiter: {e}")
-            raise
+            logger.error(f"❌ Failed to initialize rate limiter: {e}")
+            self.initialized = False
     
     async def check_rate_limit(
         self,
@@ -103,6 +115,11 @@ class RateLimiter:
         """
         if not self.initialized:
             await self.initialize()
+            
+        # If still not initialized, allow the request (fail open)
+        if not self.initialized or not self.redis_client:
+            logger.debug("Rate limiter not available, allowing request")
+            return RateLimitResult(allowed=True, remaining_requests=1000, reset_time=time.time())
         
         # Use provided config or default
         rate_config = config or self.default_configs.get(limit_type)

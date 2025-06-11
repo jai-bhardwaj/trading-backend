@@ -9,12 +9,17 @@ from .swing_momentum_strategy import SwingMomentumGain4Strategy
 from .rsi_dmi_strategy import RSIDMIStrategy
 from .rsi_dmi_intraday_delayed import RSIDMIIntradayDelayedStrategy
 from .btst_momentum_strategy import BTSTMomentumGain4Strategy
-from .test_strategy import TestStrategy
+
+# Import test strategy with error handling
+try:
+    from .test_strategy import TestStrategy
+except ImportError as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Could not import TestStrategy: {e}")
+    TestStrategy = None
 
 __all__ = [
-    # Test strategy
-    'TestStrategy',
-    
     # Production strategies
     'SwingMomentumGain4Strategy',
     'RSIDMIStrategy', 
@@ -22,17 +27,22 @@ __all__ = [
     'BTSTMomentumGain4Strategy'
 ]
 
+# Add test strategy to exports if available
+if TestStrategy is not None:
+    __all__.append('TestStrategy')
+
 # Strategy registry for easy access
 EQUITY_STRATEGIES = {
-    # Test strategy
-    'test_strategy': TestStrategy,
-    
     # Production strategies
     'swing_momentum_gain_4': SwingMomentumGain4Strategy,
     'rsi_dmi_equity': RSIDMIStrategy,
     'rsi_dmi_intraday_delayed': RSIDMIIntradayDelayedStrategy,
     'btst_momentum_gain_4': BTSTMomentumGain4Strategy,
 }
+
+# Add test strategy if available
+if TestStrategy is not None:
+    EQUITY_STRATEGIES['test_strategy'] = TestStrategy
 
 def get_strategy_class(strategy_name: str):
     """Get strategy class by name."""
@@ -44,14 +54,7 @@ def list_available_strategies():
 
 def get_strategy_info():
     """Get information about all available strategies."""
-    return {
-        'test_strategy': {
-            'name': 'Test Strategy',
-            'description': 'Places orders at configurable intervals for system testing',
-            'type': 'TESTING',
-            'timeframe': 'CONFIGURABLE',
-            'risk_level': 'LOW'
-        },
+    info = {
         'swing_momentum_gain_4': {
             'name': 'Swing Momentum Gain 4%',
             'description': 'MACD + Stochastic signals with 4% momentum, 2-day holding',
@@ -80,4 +83,16 @@ def get_strategy_info():
             'timeframe': '1D',
             'risk_level': 'MEDIUM'
         }
-    } 
+    }
+    
+    # Add test strategy info if available
+    if TestStrategy is not None:
+        info['test_strategy'] = {
+            'name': 'Test Strategy',
+            'description': 'Places orders at configurable intervals for system testing',
+            'type': 'TESTING',
+            'timeframe': 'CONFIGURABLE',
+            'risk_level': 'LOW'
+        }
+    
+    return info 

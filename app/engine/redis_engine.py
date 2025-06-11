@@ -9,30 +9,53 @@ Replaces the database polling approach with real-time queue processing.
 import asyncio
 import logging
 import signal
-import sys
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+import time
+from datetime import datetime, timedelta, time as dt_time
+from typing import Dict, Any, List, Optional, Tuple
 
 # Third-party imports
-from sqlalchemy import select, and_
-from sqlalchemy.orm import Session
+from sqlalchemy import select, update, func, and_, or_
+from sqlalchemy.orm import selectinload
 
 # Local imports
-from app.brokers import get_broker_instance
-from app.core.instrument_manager import get_instrument_manager
-from app.database import DatabaseManager
-from app.models.base import (
-    Order, OrderStatus, Strategy, StrategyStatus, User, BrokerConfig,
-    OrderSide, OrderType, ProductType
-)
-from app.queue import (
-    QueueManager, WorkerConfig, QueueConfig, QueuedOrder, PriorityOrderMetadata
-)
+from app.core.config import get_settings
+from app.core.database import DatabaseManager, get_database_manager
+from app.queue.order_queue import OrderQueueManager
+from app.models.base import Order, Strategy, Position, MarketData, OrderStatus, OrderSide, OrderType, ProductType
 from app.queue.priority_queue import OrderUrgency
-from app.strategies import AutomaticStrategyRegistry
-from app.utils.timezone_utils import ist_utcnow as datetime_now
+from app.services.order_db_sync_worker import OrderDatabaseSyncWorker, get_db_sync_worker_instance
+from app.utils.timezone_utils import ist_now as datetime_now
+from app.brokers.angelone_new import AngelOneBroker
+from app.brokers import get_broker_instance
 
 logger = logging.getLogger(__name__)
+
+class RateLimiter:
+    """Rate limiter for API calls"""
+    def __init__(self, max_calls: int, window_seconds: int):
+        self.max_calls = max_calls
+        self.window_seconds = window_seconds
+        self.calls = []
+        self._lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Acquire rate limit permission"""
+        async with self._lock:
+            now = time.time()
+            # Remove old calls outside the window
+            self.calls = [call_time for call_time in self.calls if now - call_time < self.window_seconds]
+            
+            if len(self.calls) >= self.max_calls:
+                # Calculate wait time
+                oldest_call = min(self.calls)
+                wait_time = self.window_seconds - (now - oldest_call)
+                if wait_time > 0:
+                    logger.warning(f"⏳ Rate limit reached, waiting {wait_time:.1f}s")
+                    await asyncio.sleep(wait_time)
+                    return await self.acquire()  # Recursive call after waiting
+            
+            self.calls.append(now)
+            return True
 
 class RedisBasedTradingEngine:
     """
@@ -49,30 +72,17 @@ class RedisBasedTradingEngine:
     
     def __init__(self, worker_count: int = 4, max_queue_size: int = 10000, db_manager=None):
         # Use provided database manager or get global instance
-        if db_manager:
-            self.db_manager = db_manager
-        else:
-            from app.database import get_database_manager
-            self.db_manager = get_database_manager()
+        self.db_manager = db_manager or get_database_manager()
         
-        # Queue configuration
-        self.worker_config = WorkerConfig(
-            worker_count=worker_count,
-            enable_priority_processing=True,
-            enable_load_balancing=True,
-            health_check_interval=30
-        )
+        # Initialize core components
+        self.queue_manager = OrderQueueManager(worker_count, max_queue_size)
         
-        self.queue_config = QueueConfig(
-            queue_name="trading_orders",
-            priority_queue_name="priority_orders",
-            enable_retry_processing=True,
-            enable_queue_rebalancing=True,
-            max_queue_size=max_queue_size
-        )
+        # Initialize database sync worker
+        self.db_sync_worker = get_db_sync_worker_instance()
         
-        # Initialize queue manager
-        self.queue_manager = QueueManager(self.worker_config, self.queue_config, self.db_manager)
+        # Engine configuration
+        self.worker_count = worker_count
+        self.max_queue_size = max_queue_size
         
         # Engine state
         self.is_running = False
@@ -89,6 +99,9 @@ class RedisBasedTradingEngine:
         
         # Background tasks
         self.background_tasks: List[asyncio.Task] = []
+        
+        # Rate limiter for Angel One API (100 requests per minute)
+        self.angel_rate_limiter = RateLimiter(max_calls=90, window_seconds=60)  # Conservative limit
         
         # Setup signal handlers
         self._setup_signal_handlers()
@@ -109,19 +122,7 @@ class RedisBasedTradingEngine:
             from app.strategies import initialize_strategies
             initialize_strategies(force_reload=True)
             
-            # Verify strategies are loaded
-            available_strategies = AutomaticStrategyRegistry.list_strategies()
-            logger.info(f"📈 Available strategies: {available_strategies}")
-            
-            # Test specific strategy lookup
-            test_strategy = AutomaticStrategyRegistry.get_strategy_class('RealtimeTestStrategy')
-            logger.info(f"🔍 RealtimeTestStrategy lookup result: {test_strategy}")
-            
-            if not available_strategies:
-                logger.warning("⚠️ No strategies found in registry, attempting direct initialization...")
-                AutomaticStrategyRegistry.initialize(auto_discover=True)
-                available_strategies = AutomaticStrategyRegistry.list_strategies()
-                logger.info(f"📈 After direct init: {available_strategies}")
+            logger.info("📈 Strategy initialization completed")
             
             # Start queue manager (async)
             success = await self.queue_manager.start()
@@ -136,7 +137,7 @@ class RedisBasedTradingEngine:
             await self._start_background_tasks()
             
             logger.info("✅ Redis-Based Trading Engine started successfully")
-            logger.info(f"📊 Configuration: {self.worker_config.worker_count} workers, max queue size: {self.queue_config.max_queue_size}")
+            logger.info(f"📊 Configuration: {self.worker_count} workers, max queue size: {self.max_queue_size}")
             
             return True
             
@@ -346,8 +347,10 @@ class RedisBasedTradingEngine:
                         logger.error(f"❌ Error executing strategy {strategy_id}: {e}")
                         strategy_data['error_count'] += 1
                 
-                # Wait before next execution cycle
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Wait before next execution cycle - use configurable interval
+                settings = get_settings()
+                sleep_interval = settings.trading_engine.strategy_execution_interval
+                await asyncio.sleep(sleep_interval)
                 
             except Exception as e:
                 logger.error(f"❌ Strategy executor error: {e}")
@@ -393,6 +396,15 @@ class RedisBasedTradingEngine:
                 strategy_timeframe = timeframe_mapping.get(strategy.timeframe.value, "MINUTE_5")
                 
                 # Create strategy config for the BaseStrategy
+                # Set execution interval based on strategy type
+                if strategy.strategy_type == 'test_strategy':
+                    # Test strategy should have minimal execution interval
+                    # as it has its own internal 10-minute timing logic
+                    execution_interval = 1  # Check every second for test strategy
+                else:
+                    # Real strategies should execute in near real-time
+                    execution_interval = 1  # Real-time execution for live strategies
+                
                 config = {
                     'name': strategy.name,
                     'asset_class': strategy.asset_class.value,
@@ -402,7 +414,7 @@ class RedisBasedTradingEngine:
                     'risk_parameters': strategy.risk_parameters or {},
                     'is_active': True,
                     'paper_trade': False,
-                    'execution_interval': 5,
+                    'execution_interval': execution_interval,
                     'capital_allocated': 100000,
                     'max_positions': 5,
                     'risk_per_trade': 0.02
@@ -474,90 +486,98 @@ class RedisBasedTradingEngine:
         return datetime_now() - last_execution >= interval
     
     async def _get_market_data(self, symbol: str, timeframe):
-        """Get live market data from Angel One - FINAL FIX"""
+        """Get market data from Angel One - LTP available 24/7"""
         try:
-            # Use simple Angel One broker
-            from fix_angel_one_final import get_global_angel_one
-            angel = await get_global_angel_one()
+            # Rate limit API calls to prevent exceeding access rate
+            await self.angel_rate_limiter.acquire()
             
-            if angel:
-                # Get live price
-                ltp = await angel.get_live_price(symbol)
+            # Get Angel One data - LTP should be available even when market is closed
+            from app.brokers.angelone_new import AngelOneBroker
+            from app.models.base import BrokerConfig as DBBrokerConfig
+            from app.models.base import BrokerName
+            import os
+            
+            # Create broker config from environment variables
+            broker_config = DBBrokerConfig(
+                id="angel_one_market_data",
+                user_id="system",
+                broker_name=BrokerName.ANGEL_ONE,
+                api_key=os.getenv("ANGEL_ONE_API_KEY", ""),
+                client_id=os.getenv("ANGEL_ONE_CLIENT_ID", ""),
+                password=os.getenv("ANGEL_ONE_PASSWORD", ""),
+                totp_secret=os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+                is_active=True
+            )
+            
+            # Check if credentials are available
+            if not all([broker_config.api_key, broker_config.client_id, broker_config.password]):
+                logger.error(f"❌ Angel One credentials not configured - cannot get LTP data for {symbol}")
+                raise Exception("Angel One credentials not configured")
+            
+            # Create and authenticate broker
+            angel_broker = AngelOneBroker(broker_config)
+            
+            if not angel_broker.is_authenticated:
+                await angel_broker.authenticate()
+            
+            if not angel_broker.is_authenticated:
+                logger.error(f"❌ Angel One authentication failed - cannot get LTP data for {symbol}")
+                raise Exception("Angel One authentication failed")
+            
+            # Try to get market data from Angel One API (LTP available 24/7)
+            try:
+                # Use the get_market_data method which internally calls Angel One's ltpData API
+                market_data_response = await angel_broker.get_market_data(symbol, "NSE")
                 
-                if ltp:
-                    # Create market data structure
-                    market_data = {
-                        'symbol': symbol,
-                        'timestamp': datetime_now(),
-                        'ltp': ltp,
-                        'close': ltp,
-                        'open': ltp,
-                        'high': ltp * 1.002,
-                        'low': ltp * 0.998,
-                        'volume': 100000,
-                        'exchange': "NSE",
-                        'source': 'angel_one_live'
-                    }
-                    
-                    logger.info(f"📊 🔴 LIVE: {symbol} = ₹{ltp} from Angel One")
-                    return market_data
+                if not market_data_response:
+                    logger.error(f"❌ Could not get LTP data for {symbol} from Angel One")
+                    raise Exception(f"LTP data unavailable for {symbol}")
+                
+                # Check current time to determine if market is open for labeling
+                from datetime import datetime, time
+                import pytz
+                
+                ist = pytz.timezone('Asia/Kolkata')
+                now = datetime.now(ist)
+                current_time = now.time()
+                current_date = now.date()
+                
+                market_open = time(9, 15)
+                market_close = time(15, 30)
+                is_weekday = current_date.weekday() < 5
+                market_is_open = is_weekday and market_open <= current_time <= market_close
+                
+                # Convert MarketData object to dictionary format for consistency
+                market_data = {
+                    'symbol': symbol,
+                    'timestamp': datetime_now(),
+                    'ltp': market_data_response.close,  # Close price is LTP in market data
+                    'close': market_data_response.close,
+                    'open': market_data_response.open,
+                    'high': market_data_response.high,
+                    'low': market_data_response.low,
+                    'volume': market_data_response.volume,
+                    'exchange': "NSE",
+                    'change': market_data_response.change,
+                    'change_pct': market_data_response.change_pct,
+                    'source': 'angel_one_ltp_api'
+                }
+                
+                # Log appropriately based on market status
+                if market_is_open:
+                    logger.info(f"📊 ✅ LIVE: {symbol} = ₹{market_data_response.close:.2f} from Angel One (Market Open)")
                 else:
-                    logger.warning(f"⚠️ No live price for {symbol}")
-            else:
-                logger.warning(f"⚠️ Angel One broker not available")
+                    logger.info(f"📊 💤 LTP: {symbol} = ₹{market_data_response.close:.2f} from Angel One (Market Closed)")
+                
+                return market_data
+                
+            except Exception as api_error:
+                logger.error(f"❌ Failed to get market data for {symbol}: {api_error}")
+                raise Exception(f"Market data unavailable: {api_error}")
                         
         except Exception as e:
-            logger.error(f"❌ Angel One market data failed for {symbol}: {e}")
-            
-            logger.debug(f"📊 Using simulated market data for {symbol} (live data unavailable)")
-            
-            # Fallback to simulated data if live data fails
-            import random
-            
-            # Get base price for symbol
-            base_prices = {
-                'RELIANCE': 2500.0,
-                'TCS': 3800.0,
-                'INFY': 1800.0,
-                'HDFC': 1600.0,
-                'TATAMOTORS': 900.0,
-                'BAJFINANCE': 7000.0,
-                'MARUTI': 11000.0
-            }
-            
-            base_price = base_prices.get(symbol, 1000.0)
-            
-            # Generate realistic market data
-            change_pct = random.uniform(-0.02, 0.02)  # ±2% change
-            current_price = base_price * (1 + change_pct)
-            
-            # Generate OHLC data
-            high = current_price * random.uniform(1.001, 1.005)
-            low = current_price * random.uniform(0.995, 0.999)
-            volume = random.randint(100000, 1000000)
-            
-            market_data = {
-                'symbol': symbol,
-                'timestamp': datetime_now(),
-                'open': base_price,
-                'high': high,
-                'low': low,
-                'close': current_price,
-                'ltp': current_price,  # Last traded price
-                'volume': volume,
-                'asset_class': 'EQUITY',
-                'exchange': "NSE",
-                'change': current_price - base_price,
-                'change_pct': change_pct * 100,
-                'previous_close': base_price,
-                'source': 'simulated_fallback'
-            }
-            
-            logger.debug(f"📊 Simulated market data for {symbol}: ₹{current_price}")
-            return market_data
-            
-        except Exception as e:
-            logger.error(f"Error getting market data for {symbol}: {e}")
+            logger.error(f"❌ Cannot get market data for {symbol}: {e}")
+            # NO FALLBACK TO FAKE DATA - return None to indicate failure
             return None
     
     async def _create_order_from_signal(self, strategy: Strategy, signal):
@@ -759,7 +779,7 @@ class RedisBasedTradingEngine:
                 strategy_data['error_count'] += 1
 
     async def update_market_data(self):
-        """Fetch and log market data for all tracked symbols (placeholder)."""
+        """Fetch and log market data for all tracked symbols - REAL DATA ONLY."""
         symbols = set()
         for strategy_data in self.active_strategies.values():
             strategy = strategy_data['strategy']
@@ -768,7 +788,10 @@ class RedisBasedTradingEngine:
             symbols.update(strategy_symbols)
         for symbol in symbols:
             data = await self._get_market_data(symbol, None)
-            logger.info(f"[update_market_data] Market data for {symbol}: {data}")
+            if data:
+                logger.info(f"[update_market_data] ✅ Real market data for {symbol}: ₹{data.get('ltp', 'N/A')}")
+            else:
+                logger.warning(f"[update_market_data] ❌ Could not get real market data for {symbol}")
 
     async def monitor_performance(self):
         """Log current performance metrics (single call, not a loop)."""
