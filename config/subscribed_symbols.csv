@@ -1,0 +1,82 @@
+symbol,priority,auto_subscribe,include_derivatives
+# Top priority stocks for live trading
+RELIANCE,1,true,true
+TCS,1,true,true
+INFY,1,true,true
+HDFCBANK,1,true,true
+ICICIBANK,1,true,true
+LT,1,true,false
+WIPRO,1,true,false
+ONGC,1,true,false
+ITC,1,true,false
+SBIN,1,true,false
+# Indices
+NIFTY,1,true,true
+BANKNIFTY,1,true,true
+# Commodities
+GOLD,2,true,true
+SILVER,2,true,false
+CRUDEOIL,2,true,false
+NATURALGAS,2,true,false
+# Currency
+USDINR,2,true,true
+EURINR,3,false,false
+
+# EQUITY SYMBOLS - System will auto-fetch all available derivatives
+BHARTIARTL,1,true,true
+ASIANPAINT,2,true,true
+MARUTI,2,true,true
+AXISBANK,2,true,true
+TITAN,2,true,true
+NESTLEIND,2,true,true
+ULTRACEMCO,2,true,true
+BAJFINANCE,2,true,true
+POWERGRID,2,true,true
+NTPC,2,true,true
+
+# INDEX SYMBOLS - System will auto-fetch all available derivatives
+FINNIFTY,1,true,true
+MIDCPNIFTY,2,true,true
+NIFTYIT,2,true,true
+SENSEX,2,true,true
+BANKEX,2,true,true
+
+# COMMODITY SYMBOLS - System will auto-fetch all available derivatives
+COPPER,2,true,true
+ZINC,2,true,true
+ALUMINIUM,3,true,false
+NICKEL,3,true,false
+LEAD,3,false,false
+
+# CURRENCY SYMBOLS - System will auto-fetch all available derivatives
+GBPINR,2,true,true
+JPYINR,3,true,false
+
+# AGRICULTURAL COMMODITIES - System will auto-fetch all available derivatives
+WHEAT,3,true,false
+RICE,3,true,false
+SUGAR,3,true,false
+COTTON,3,false,false
+SOYBEAN,3,false,false
+
+# ADDITIONAL EQUITY SYMBOLS
+COALINDIA,3,true,false
+DRREDDY,3,true,false
+SUNPHARMA,3,true,false
+CIPLA,3,true,false
+DIVISLAB,3,true,false
+APOLLOHOSP,3,true,false
+TECHM,3,true,false
+HCLTECH,3,true,false
+BAJAJFINSV,3,true,false
+BRITANNIA,3,true,false
+HINDALCO,3,true,false
+JSWSTEEL,3,true,false
+INDUSINDBK,3,true,false
+HEROMOTOCO,3,true,false
+GRASIM,3,true,false
+EICHERMOT,3,false,false
+SHREECEM,3,false,false
+BAJAJ-AUTO,3,false,false
+TATACONSUM,3,false,false
+BPCL,3,false,false 

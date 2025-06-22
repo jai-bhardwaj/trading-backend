@@ -1,0 +1,6 @@
+{
+  "max_capital_per_trade": 10000,
+  "max_positions": 10,
+  "risk_percentage": 5.0,
+  "enable_paper_trading": true
+}

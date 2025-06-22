@@ -1,213 +1,51 @@
-# 🐳 Docker Ignore File for Trading Engine
-# Optimizes build performance by excluding unnecessary files
-
-# =====================================
-# Development & Testing Files
-# =====================================
-**/__pycache__/
-**/*.pyc
-**/*.pyo
-**/*.pyd
-**/.pytest_cache/
-# Removed **/test_*.py to allow test_strategy.py
-**/tests/
-**/*_test.py
-stress_test_comprehensive.py
-redis_performance_test.py
-
-# =====================================
-# Git & Version Control
-# =====================================
-.git/
+# Git files
+.git
 .gitignore
-.gitattributes
 
-# =====================================
-# IDE & Editor Files
-# =====================================
+# Documentation
+README.md
+docs/
+
+# Development files
 .vscode/
 .idea/
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+.env.example
+
+# Logs (will be mounted as volume)
+logs/*.log
+
+# Data directories (will be mounted as volumes)
+data/market_data/*
+data/user_data/*
+data/orders/*
+
+# Test files
+tests/
+.pytest_cache/
+
+# Old backup
+lightweight_engine/
+
+# Scripts
+scripts/
+
+# Virtual environment
+venv/
+.virtualenv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
 
-# =====================================
-# Environment & Configuration
-# =====================================
-.env
-.env.local
-.env.production
-.env.staging
-docker.env.example
-
-# =====================================
-# Virtual Environment
-# =====================================
-venv/
-env/
-.venv/
-__pycache__/
-
-# =====================================
-# Logs & Runtime Files
-# =====================================
-logs/
-*.log
-*.pid
-*.sock
-
-# =====================================
-# Documentation & Reports
-# =====================================
-*.md
-docs/
-documentation/
-STRESS_TEST_REPORT.md
-OPTIMIZATION_SUMMARY.md
-
-# =====================================
-# Backup & Data Files
-# =====================================
-backups/
-data/*.db
-data/*.sqlite
-data/temp/
-*.backup
-
-# =====================================
-# Build & Deploy Files
-# =====================================
-deploy.sh
-deploy_production.sh
-start-monitoring.sh
-monitoring_setup.sh
-ecosystem.config.js
-
-# =====================================
-# Package Manager Files
-# =====================================
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# =====================================
-# Database Files
-# =====================================
-*.sqlite3
-*.db
-
-# =====================================
-# Temporary Files
-# =====================================
-tmp/
-temp/
-.tmp/
+# Temporary files
 *.tmp
-*.temp
-
-# =====================================
-# OS Generated Files
-# =====================================
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# =====================================
-# Coverage & Analysis
-# =====================================
-.coverage
-.nyc_output
-coverage/
-htmlcov/
-
-# =====================================
-# Docker Files (when building)
-# =====================================
-Dockerfile
-docker-compose*.yml
-docker-deploy.sh
-docker-manage.sh
-
-# =====================================
-# Documentation
-# =====================================
-*.rst
-.github/
-
-# =====================================
-# Python
-# =====================================
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-
-# =====================================
-# Logs
-# =====================================
-*.out
-
-# =====================================
-# Data directories (exclude large data files but keep structure)
-# =====================================
-data/*.csv
-data/*.json
-data/*.db
-data/*.sqlite
-
-# =====================================
-# Environment files (will be provided by docker-compose)
-# =====================================
-.env.local
-.env.development
-.env.test
-*.env.backup
-
-# =====================================
-# Docker files
-# =====================================
-Dockerfile*
-docker-compose*.yml
-.dockerignore
-
-# =====================================
-# Scripts and utilities
-# =====================================
-*.sh
-!scripts/
-
-# =====================================
-# Backup files
-# =====================================
-*.bak
-
-# =====================================
-# Unit test files (but not trading strategy files)
-# =====================================
-**/tests/
-**/*_test.py
-**/unit_test_*.py
-**/integration_test_*.py
-stress_test_comprehensive.py
-redis_performance_test.py 
+*.bak 

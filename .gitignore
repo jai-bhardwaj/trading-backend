@@ -1,267 +1,124 @@
-# =================================================================
-# TRADING BACKEND - GITIGNORE
-# =================================================================
-# Comprehensive .gitignore for production trading engine
-# Covers Python, trading data, logs, security files, and deployment artifacts
-
-# Environment and secrets
-.env
-.env.local
-.env.production
-.env.staging
-.env.development
-
-# Logs
-logs/
-*.log
-trading_engine.pid
-*.out
-*.err
-
-# PM2
-.pm2/
-pids/
-*.pid
-*.seed
-*.pid.lock
-ecosystem.config.js.backup
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-venv/
-env/
-ENV/
-.pytest_cache/
-.coverage
-htmlcov/
-.mypy_cache/
-*.egg-info/
 build/
+develop-eggs/
 dist/
-.tox/
-.nox/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Node.js (for PM2)
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Database
-*.db
-*.sqlite3
-database.url
-*.backup.sql
-*.dump
-
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
-.vscode/settings.json
+*~
 
 # OS
 .DS_Store
-Thumbs.db
-.directory
-
-# Backup files
-backup_*/
-*.backup
-*.bak
-*.old
-*~
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-
-# Production artifacts
-deployment/
-*.pid
-core.*
-
-# Data and Trading Files
-data/
-market_data/
-backtest_results/
-trade_history/
-*.csv
-*.xlsx
-*.json.bak
-
-# Documentation artifacts
-site/
-docs/_build/
-
-# Cache and temporary files
-.cache/
-.pytest_cache/
-
-# Security and Keys
-*.key
-*.pem
-*.crt
-*.csr
-*.p12
-*.pfx
-keys/
-certificates/
-secrets/
-
-# Trading Engine Specific
-instrument_cache/
-price_data/
-order_cache/
-*.pickle
-*.pkl
-
-# Jupyter Notebooks checkpoints
-.ipynb_checkpoints/
-
-# Local development tools
-.python-version
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-
-# PyCharm
-.idea/
-*.iml
-*.iws
-.idea_modules/
-
-# Vim
-*.swp
-*.swo
-*~
-
-# Testing
-.pytest_cache/
-test_results/
-coverage_html_report/
-
-# Package files
-*.egg
-*.wheel
-
-# System files
-*.DS_Store
-.AppleDouble
-.LSOverride
-Icon?
+.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Desktop.ini
+Thumbs.db
 
-# Configuration backups
-config.backup.*
-settings.backup.*
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Lock files (keep requirements.txt but ignore lock files)
-Pipfile.lock
-poetry.lock
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
 
-# Terraform (if used for infrastructure)
-*.tfstate
-*.tfstate.*
-.terraform/
-.terraform.lock.hcl
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
 
-# Docker (if used)
-.dockerignore.backup
-docker-compose.override.yml
+# nyc test coverage
+.nyc_output
 
-# SSL/TLS certificates
-*.crt
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.backup
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# Trading system specific
+data/
+!data/.gitkeep
+temp/
+test_*.py
+system_health_report_*.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+.dockerignore
+
+# Secrets
+secrets/
 *.key
 *.pem
-*.p12
-*.pfx
-ssl/
+*.crt
 
-# Local scripts and utilities
-local_scripts/
-utils/local_*
-scripts/local_*
-
-# Performance profiling
-*.prof
-*.pstats
-prof/
-
-# =================================================================
-# MONITORING AND OBSERVABILITY
-# =================================================================
-
-# Docker Compose monitoring stack - ignore runtime data but keep essential files
-# (Note: using specific patterns instead of blanket monitoring/ exclusion)
-
-# Grafana data and configuration
-monitoring/grafana/
-monitoring/config/grafana/
-monitoring/config/datasources/
-monitoring/config/dashboards/
-grafana_data/
-
-# Prometheus data and configuration
-monitoring/prometheus/
-prometheus_data/
-
-# Docker volumes and runtime data
-*_data/
-docker-compose.override.yml
-
-# Monitoring logs
-monitoring/logs/
-monitoring/*.log
-
-# Container runtime files
-.dockerenv
-docker-compose.*.yml.backup
-
-# Monitoring credentials and configs (keep templates)
-monitoring/config/*.ini
-monitoring/config/*.yml
-!monitoring/config/*.template
-!monitoring/config/*.example
-
-# Grafana plugins and temp files
-monitoring/grafana/plugins/
-monitoring/grafana/data/
-monitoring/grafana/logs/
-
-# Alert manager data
-alertmanager_data/
-
-# Node exporter textfile collector
-node_exporter/
-
-# Container monitoring cache
-cadvisor_cache/
-
-# Monitoring shell history and temp files
-monitoring/.bash_history
-monitoring/*.tmp
-monitoring/*.temp
-
-# Monitoring and metrics
-metrics/
-monitoring/local_*# Strategy management scripts
-strategy-cli
-strategy-unified
-
-# Removed crypto and derivatives strategies
-app/strategies/crypto/
-app/strategies/derivatives/
-app/strategies/equity/simple_sma_strategy.py
-app/strategies/equity/example_strategy.py
+# Backup files
+*.bak
+*.backup

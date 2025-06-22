@@ -1,66 +1,75 @@
-# 🚀 Production Trading Engine Dockerfile
+# Production Trading System Dockerfile
+# Multi-stage build for optimized production image
 
-# Base stage with common dependencies
-FROM python:3.12-slim-bullseye as base
+# Build stage
+FROM python:3.12-slim as builder
 
-LABEL maintainer="Trading Engine Team"
-LABEL version="2.0.0"
-LABEL description="High-Performance Trading Engine with Optimizations"
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
+    gcc \
+    g++ \
+    libpq-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Production stage
+FROM python:3.12-slim as production
+
+LABEL maintainer="Trading System"
+LABEL description="Production Multi-User Trading Engine"
+LABEL version="2.0.0"
+
+# Create app user for security
+RUN groupadd -r trading && useradd -r -g trading trading
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    libpq5 \
     curl \
-    postgresql-client \
+    procps \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy application code
+COPY --chown=trading:trading . .
 
-# Install Python dependencies with optimizations
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Create necessary directories with proper permissions
+RUN mkdir -p logs data/market_data data/user_data data/orders \
+    && chown -R trading:trading /app \
+    && chmod -R 755 /app
 
-# Development stage
-FROM base as development
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-# Add development tools if needed
-CMD ["python", "main.py"]
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV TRADING_ENV=production
+ENV LOG_LEVEL=INFO
 
-# Production stage
-FROM base as production
+# Expose ports
+EXPOSE 8000
 
-# Create non-root user for security
-RUN groupadd -r trading && useradd -r -g trading trading
-
-# Copy all application code
-COPY . .
-
-# Create necessary directories and set permissions
-RUN mkdir -p /app/logs /app/data && \
-    chown -R trading:trading /app
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Switch to non-root user
 USER trading
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import redis; r = redis.Redis(host='redis', port=6379); r.ping()" || exit 1
-
-# Expose port (if needed for API)
-EXPOSE 8000
-
-# Default command
+# Run the trading system
 CMD ["python", "main.py"] 

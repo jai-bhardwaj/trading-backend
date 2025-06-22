@@ -1,0 +1,26 @@
+symbol,exchange,instrument_type,enabled,category,notes
+RELIANCE,NSE,EQ,true,large_cap,Reliance Industries
+TCS,NSE,EQ,true,large_cap,Tata Consultancy Services
+INFY,NSE,EQ,true,large_cap,Infosys Limited
+HDFC,NSE,EQ,true,large_cap,HDFC Bank
+ICICIBANK,NSE,EQ,true,large_cap,ICICI Bank
+HDFCBANK,NSE,EQ,true,large_cap,HDFC Bank
+WIPRO,NSE,EQ,true,large_cap,Wipro Limited
+BHARTIARTL,NSE,EQ,true,large_cap,Bharti Airtel
+ITC,NSE,EQ,true,large_cap,ITC Limited
+SBIN,NSE,EQ,true,large_cap,State Bank of India
+KOTAKBANK,NSE,EQ,false,large_cap,Kotak Mahindra Bank
+AXISBANK,NSE,EQ,false,large_cap,Axis Bank
+BAJFINANCE,NSE,EQ,false,large_cap,Bajaj Finance
+ASIANPAINT,NSE,EQ,false,large_cap,Asian Paints
+NIFTY,NFO,FUT,true,index_futures,Nifty 50 Futures
+BANKNIFTY,NFO,FUT,true,index_futures,Bank Nifty Futures
+NIFTY,NFO,OPT,true,index_options,Nifty 50 Options
+BANKNIFTY,NFO,OPT,true,index_options,Bank Nifty Options
+RELIANCE,NFO,FUT,false,stock_futures,Reliance Futures
+TCS,NFO,FUT,false,stock_futures,TCS Futures
+GOLD,MCX,FUT,false,commodities,Gold Futures
+SILVER,MCX,FUT,false,commodities,Silver Futures
+CRUDEOIL,MCX,FUT,false,commodities,Crude Oil Futures
+NATURALGAS,MCX,FUT,false,commodities,Natural Gas Futures
+USDINR,CDS,FUT,false,currency,USD-INR Futures 

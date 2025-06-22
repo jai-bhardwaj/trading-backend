@@ -1,89 +1,58 @@
 version: '3.8'
 
 services:
-  # Redis Cache & Queue
+  # Redis Cache & Message Queue
   redis:
     image: redis:7-alpine
     container_name: trading-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
-    environment:
-      - TZ=Asia/Kolkata
-    volumes:
-      - redis_data:/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
     ports:
       - "6379:6379"
-    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+      - ./config/redis.conf:/etc/redis/redis.conf:ro
     networks:
       - trading-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5
-
-  # Main Trading Engine
-  trading-engine:
-    build:
-      context: .
-      target: production
-    container_name: trading-engine-core
-    env_file:
-      - .env
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-      - TZ=Asia/Kolkata
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - trading-network
-    healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r = redis.Redis(host='redis', port=6379); r.ping()"]
-      interval: 30s
-      timeout: 10s
-      start_period: 5s
       retries: 3
     logging:
       driver: json-file
       options:
-        max-size: "100m"
-        max-file: "5"
+        max-size: "10m"
+        max-file: "3"
+    command: redis-server /etc/redis/redis.conf
 
-  # Trading API
-  trading-api:
-    build:
+  # Main Trading Engine
+  trading-engine:
+    build: 
       context: .
+      dockerfile: Dockerfile
       target: production
-    container_name: trading-api
-    command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    container_name: trading-engine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
     env_file:
       - .env
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-      - TZ=Asia/Kolkata
+      - TRADING_ENV=production
+      - DATABASE_URL=${DATABASE_URL}  # Your DigitalOcean database URL
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      # SSL for DigitalOcean managed database
+      - PGSSLMODE=require
     volumes:
       - ./logs:/app/logs
-      - ./data:/app/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    ports:
-      - "8000:8000"
+      - ./data:/app/data:ro
+      - ./config:/app/config:ro
     depends_on:
-      trading-engine:
-        condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
     networks:
       - trading-network
     healthcheck:
@@ -91,72 +60,139 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
     logging:
       driver: json-file
       options:
         max-size: "100m"
         max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
 
-  # Strategy Monitor
-  strategy-monitor:
-    build:
-      context: .
-      target: production
-    container_name: strategy-monitor
-    command: ["python", "app/monitoring/strategy_monitor.py"]
-    env_file:
-      - .env
-    environment:
-      - PYTHONPATH=/app
-      - PYTHONUNBUFFERED=1
-      - TZ=Asia/Kolkata
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    depends_on:
-      trading-engine:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: trading-nginx
     restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - trading-engine
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 60s
-      timeout: 15s
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
       retries: 3
     logging:
       driver: json-file
       options:
-        max-size: "100m"
-        max-file: "5"
+        max-size: "50m"
+        max-file: "3"
 
-  # Redis Exporter for Monitoring
-  redis-exporter:
-    image: oliver006/redis_exporter:latest
-    container_name: trading-redis-exporter
-    environment:
-      - REDIS_ADDR=redis://redis:6379
-      - TZ=Asia/Kolkata
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    ports:
-      - "9121:9121"
-    depends_on:
-      redis:
-        condition: service_healthy
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: trading-prometheus
     restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
     networks:
       - trading-network
+    profiles:
+      - monitoring
 
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trading-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - trading-network
+    profiles:
+      - monitoring
+
+  # Log Management - ELK Stack (Optional)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: trading-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - trading-network
+    profiles:
+      - logging
+
+  # Redis Insight for Redis Management
+  redis-insight:
+    image: redislabs/redisinsight:latest
+    container_name: trading-redis-insight
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    networks:
+      - trading-network
+    profiles:
+      - tools
+
+# Named Volumes
+volumes:
+  redis_data:
+    name: trading_redis_data
+  prometheus_data:
+    name: trading_prometheus_data
+  grafana_data:
+    name: trading_grafana_data
+  elasticsearch_data:
+    name: trading_elasticsearch_data
+
+# Networks
 networks:
   trading-network:
     driver: bridge
-
-volumes:
-  redis_data:
-    driver: local
+    name: trading-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
