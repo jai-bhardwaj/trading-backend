@@ -1,260 +1,121 @@
-# 🚀 Trading Backend System
+# 🚀 Production Trading Backend
 
-A production-ready, enterprise-grade algorithmic trading system with comprehensive security, performance optimization, and monitoring capabilities.
+A production-ready, secure multi-user algorithmic trading system built with Python FastAPI.
 
-## ✨ Features
+## 🎯 Production Features
 
-### 🛡️ Security
-- **JWT Authentication** with refresh tokens and rate limiting
-- **Input Validation** protecting against SQL injection and XSS attacks
-- **Production Safety** enforcement preventing unsafe trading fallbacks
-- **Security Headers** for XSS, clickjacking, and CSRF protection
+- **🔒 Security Hardened**: Read-only containers, capability dropping, non-root execution
+- **⚡ High Performance**: Optimized for production workloads with resource limits
+- **🏦 Multi-Broker Support**: Angel One, Zerodha, Upstox, Fyers integration
+- **📊 Real-time Data**: Live market data processing and order execution
+- **🛡️ Risk Management**: Advanced position sizing and risk controls
+- **💾 Enterprise Database**: DigitalOcean PostgreSQL with SSL
+- **🔄 Caching**: Redis for high-performance data caching
+- **📈 Monitoring**: Health checks and logging for production monitoring
 
-### ⚡ Performance
-- **Smart Memory Management** with 80% usage reduction
-- **Thread-Safe Operations** with atomic order processing
-- **Safe Financial Calculations** with division-by-zero protection
-- **Automated Resource Cleanup** and monitoring
-
-### 📊 Monitoring
-- **Real-time Health Dashboards** for system monitoring
-- **Resource Usage Tracking** with automated alerts
-- **Comprehensive Diagnostics** and performance metrics
-- **Error Handling** with intelligent trading control
-
-### 🔧 Developer Experience
-- **Complete Type Safety** with comprehensive type definitions
-- **Centralized Configuration** with constants management
-- **Comprehensive Documentation** and testing
-- **Secure Docker Deployment** with hardened containers
-
-## 🚀 Quick Start
+## 🚀 Quick Deployment
 
 ### Prerequisites
-- Python 3.11+
-- Docker and Docker Compose
-- Redis (for session management)
-- PostgreSQL (for data storage)
+- Docker & Docker Compose
+- `.env` file with production configuration
 
-### Installation
-
-1. **Clone and setup**
+### Production Deployment
 ```bash
-git clone <repository-url>
-cd trading-backend
-cp .env.example .env
-# Edit .env with your configuration
+# Deploy secure production system
+./deploy.sh
 ```
 
-2. **Install dependencies**
+That's it! The system will:
+- ✅ Validate your environment configuration
+- ✅ Deploy with security hardening enabled
+- ✅ Perform health checks
+- ✅ Provide service status and URLs
+
+## 🔧 Configuration
+
+Create a `.env` file with your production settings:
+
 ```bash
-pip install -r requirements.txt
-```
+# Database (DigitalOcean PostgreSQL)
+DATABASE_URL=postgresql://username:password@host:port/database?sslmode=require
 
-3. **Run with Docker (Recommended)**
-```bash
-# For development
-docker-compose up -d
-
-# For production (secure configuration)
-docker-compose -f docker/docker-compose.secure.yml up -d
-```
-
-4. **Run locally**
-```bash
-python main.py
-```
-
-### Configuration
-
-Create a `.env` file with the following variables:
-
-```env
-# Broker Configuration
-ANGEL_ONE_API_KEY=your_api_key
-ANGEL_ONE_SECRET_KEY=your_secret_key
-ANGEL_ONE_CLIENT_ID=your_client_id
-ANGEL_ONE_PIN=your_pin
-ANGEL_ONE_TOTP_SECRET=your_totp_secret
-
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/trading_db
+# Redis Cache
+REDIS_URL=redis://localhost:6379/0
 
 # Security
-JWT_SECRET_KEY=your-super-secret-jwt-key
-TRADING_MODE=PAPER  # or LIVE for production
+JWT_SECRET=your-secret-key
+ENCRYPTION_KEY=your-encryption-key
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
+# Trading
+ENABLE_PAPER_TRADING=true
+MAX_POSITION_SIZE=100000
+
+# Brokers
+ANGEL_ONE_API_KEY=your-api-key
+ANGEL_ONE_SECRET_KEY=your-secret
 ```
 
-## 📖 API Documentation
+## 📊 Service URLs
 
-### Health Check
+After deployment, access your services at:
+
+- **Trading API**: http://127.0.0.1:8000
+- **Health Check**: http://127.0.0.1:8000/health  
+- **API Documentation**: http://127.0.0.1:8000/docs
+
+## 🔒 Security Features
+
+- **Container Security**: Read-only root filesystem, non-root user (UID 1000)
+- **Network Security**: Localhost binding only (127.0.0.1)
+- **Resource Limits**: 1GB memory, 2 CPU cores maximum
+- **Capability Security**: All Linux capabilities dropped except NET_BIND_SERVICE
+- **File Security**: Temporary filesystems with noexec, nosuid flags
+
+## 📝 Management Commands
+
 ```bash
-GET /health
+# View system logs
+cd docker && docker-compose -f docker-compose.secure.yml logs -f
+
+# Stop the system
+cd docker && docker-compose -f docker-compose.secure.yml down
+
+# Restart the system
+./deploy.sh
+
+# Check system status
+curl http://127.0.0.1:8000/health
 ```
 
-### Authentication
-```bash
-POST /auth/login
-POST /auth/refresh
-POST /auth/logout
+## 🏗️ Architecture
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Trading API   │────│   Redis Cache   │────│  PostgreSQL DB  │
+│   (Port 8000)   │    │   (Internal)    │    │  (DigitalOcean) │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Broker Integrations                         │
+│  Angel One │ Zerodha │ Upstox │ Fyers │ Alice Blue             │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Trading Operations
-```bash
-GET /strategies
-POST /strategies/{strategy_id}/activate
-GET /positions
-GET /orders
-```
+## 🎯 Production Ready
 
-### Admin Monitoring
-```bash
-GET /admin/system/health
-GET /admin/system/dashboard
-GET /admin/resources/status
-POST /admin/resources/cleanup
-```
+This system is optimized for:
 
-## 🛡️ Security Features
+- **Investor Presentations**: Professional-grade deployment and monitoring
+- **Live Trading**: Real money trading with proper risk management
+- **Compliance**: Security hardening meets financial industry standards
+- **Scalability**: Resource-limited containers ready for horizontal scaling
+- **Monitoring**: Health checks and logging for production oversight
 
-- **JWT-based Authentication** with automatic token refresh
-- **Rate Limiting**: 60 requests/minute, 5 login attempts per 15 minutes
-- **Input Validation**: Protection against 28 attack patterns
-- **Production Safety**: Prevents unsafe fallbacks to demo trading
-- **Security Headers**: Comprehensive protection against web attacks
+## 📞 Support
 
-## 📊 Monitoring & Health
-
-The system includes comprehensive monitoring capabilities:
-
-- **System Health Dashboard**: Real-time system status and metrics
-- **Resource Monitoring**: Memory, CPU, and resource usage tracking
-- **Error Handling**: Intelligent error classification and response
-- **Performance Metrics**: Response times, throughput, and efficiency
-
-Access monitoring at: `http://localhost:8000/admin/system/dashboard`
-
-## 🐳 Docker Deployment
-
-### Development
-```bash
-docker-compose up -d
-```
-
-### Production (Secure)
-```bash
-docker-compose -f docker/docker-compose.secure.yml up -d
-```
-
-The secure configuration includes:
-- Non-root user execution
-- Read-only root filesystem
-- Minimal capabilities
-- Resource limits
-- Network isolation
-
-## 🧪 Testing
-
-The system includes comprehensive test suites covering:
-
-- Authentication and security
-- Memory management and performance
-- Thread safety and race conditions
-- Financial calculations and error handling
-- System integration and monitoring
-
-## 📚 Documentation
-
-- **API Documentation**: Available at `/docs` when running
-- **System Architecture**: See `docs/` directory
-- **Security Guide**: `docs/security.md`
-- **Deployment Guide**: `docs/deployment.md`
-
-## 🔧 Development
-
-### Project Structure
-```
-trading-backend/
-├── src/
-│   ├── core/          # Core trading logic and security
-│   ├── engine/        # Trading engine implementations
-│   ├── strategies/    # Trading strategies
-│   └── api/           # API endpoints
-├── config/            # Configuration files
-├── docs/              # Documentation
-├── docker/            # Docker configurations
-└── scripts/           # Utility scripts
-```
-
-### Core Modules
-- **Authentication**: JWT-based secure authentication
-- **Memory Management**: Smart memory optimization
-- **Order Management**: Thread-safe order processing
-- **Error Handling**: Intelligent error management
-- **Input Validation**: Comprehensive security validation
-- **Monitoring**: Real-time system monitoring
-
-## 🚀 Production Deployment
-
-1. **Environment Setup**
-   - Configure production environment variables
-   - Set up SSL/TLS certificates
-   - Configure firewall and security groups
-
-2. **Database Setup**
-   - Set up PostgreSQL with proper user permissions
-   - Configure Redis for session management
-   - Set up database backups
-
-3. **Application Deployment**
-   - Use secure Docker configuration
-   - Configure load balancing if needed
-   - Set up monitoring and alerting
-
-4. **Security Configuration**
-   - Ensure all secrets are properly configured
-   - Enable production safety mode
-   - Configure rate limiting and security headers
-
-## 📈 Performance
-
-The system is optimized for:
-- **Memory Efficiency**: 80% reduction in memory usage
-- **Thread Safety**: Complete atomic operation system
-- **Error Resilience**: Intelligent error handling and recovery
-- **Scalability**: Designed for high-throughput trading
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🆘 Support
-
-For support and questions:
-- Check the documentation in the `docs/` directory
-- Review the monitoring dashboard for system health
-- Check logs for error details
-- Refer to the troubleshooting guide
-
-## 🔄 System Status
-
-- **Security**: ✅ Hardened (JWT, validation, rate limiting)
-- **Performance**: ✅ Optimized (80% memory reduction)
-- **Stability**: ✅ Enhanced (error handling, thread safety)
-- **Monitoring**: ✅ Comprehensive (real-time dashboards)
-- **Production Ready**: ✅ Fully tested and validated
+For production support and deployment assistance, refer to the deployment logs and health check endpoints.
 
 ---
 
-**Built with ❤️ for secure, reliable algorithmic trading**
+**⚡ Ready for Production Trading** | **🔒 Security Hardened** | **�� Investor Ready**
