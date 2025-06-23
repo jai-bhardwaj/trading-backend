@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional, Callable
 import redis.asyncio as redis
 from sqlalchemy import select, update, delete
 from sqlalchemy.orm import sessionmaker
+import os
 
 from .database import get_db_manager
 from .signals import TradingSignal, SignalAction, OrderType, ProductType, create_market_buy_signal, create_limit_order_signal
@@ -190,13 +191,33 @@ class RSIMomentumStrategy(BaseStrategy):
         avg_gain = np.mean(gains)
         avg_loss = np.mean(losses)
         
-        if avg_loss == 0:
-            return 100
+        # SAFE DIVISION WITH PROPER THRESHOLD (Fixed division by zero)
+        zero_threshold = 1e-8
         
+        if avg_loss < zero_threshold:
+            if avg_gain > zero_threshold:
+                logger.info(f"RSI({symbol}): Only gains detected, returning 100")
+                return 100.0
+            else:
+                logger.info(f"RSI({symbol}): No significant price movement, returning 50")
+                return 50.0
+        
+        if avg_gain < zero_threshold:
+            logger.info(f"RSI({symbol}): Only losses detected, returning 0")
+            return 0.0
+        
+        # Safe RS calculation
         rs = avg_gain / avg_loss
+        
+        # Protect against extreme values
+        if rs > 1e6:
+            logger.warning(f"RSI({symbol}): Extremely high RS value, returning 100")
+            return 100.0
+        
         rsi = 100 - (100 / (1 + rs))
         
-        return rsi
+        # Ensure valid range
+        return max(0.0, min(100.0, rsi))
     
     def _calculate_position_size(self, price: float) -> int:
         """Calculate position size based on price"""
@@ -417,8 +438,8 @@ class RealTimeStrategyManager:
     Real-time strategy management with signal generation
     """
     
-    def __init__(self, database_url: str = None, redis_url: str = "redis://redis:6379/0"):
-        # Use shared trading database manager (singleton)
+    def __init__(self, database_url: str = None, redis_url: str = "redis://localhost:6379/0"):
+        self.database_url = database_url or os.getenv('DATABASE_URL')
         self.db_manager = get_db_manager(database_url)
         self.redis_url = redis_url
         self.redis_client = None
@@ -451,8 +472,14 @@ class RealTimeStrategyManager:
             self.db_manager.create_tables()
             
             # Initialize Redis
-            self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
-            await self.redis_client.ping()
+            try:
+                self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+                await self.redis_client.ping()
+                logger.info("✅ Redis connection established for strategy cache")
+            except Exception as e:
+                logger.warning(f"⚠️ Redis connection failed: {e}")
+                logger.info("📝 Strategy cache will work without Redis pub/sub")
+                self.redis_client = None
             
             # Load initial strategies from database
             await self.reload_strategies_from_db()
@@ -601,29 +628,25 @@ class RealTimeStrategyManager:
     
     async def _monitor_strategy_changes(self):
         """Monitor Redis pub/sub for strategy changes"""
+        if not self.redis_client:
+            logger.info("📝 Redis pub/sub monitoring disabled (Redis not available)")
+            return
+            
         try:
             pubsub = self.redis_client.pubsub()
             await pubsub.subscribe('strategy_changes')
-            
             logger.info("👂 Listening for strategy changes on Redis pub/sub...")
             
             async for message in pubsub.listen():
                 if message['type'] == 'message':
                     try:
-                        change_data = json.loads(message['data'])
-                        await self._handle_strategy_change(change_data)
+                        data = json.loads(message['data'])
+                        await self._handle_strategy_change(data)
                     except Exception as e:
                         logger.error(f"❌ Error processing strategy change: {e}")
-        
-        except asyncio.CancelledError:
-            logger.info("🛑 Strategy monitoring cancelled")
         except Exception as e:
-            logger.error(f"❌ Error in strategy monitoring: {e}")
-            if self.is_running:
-                # Restart monitoring after error
-                await asyncio.sleep(5)
-                if self.is_running:
-                    asyncio.create_task(self._monitor_strategy_changes())
+            logger.warning(f"⚠️ Redis pub/sub monitoring failed: {e}")
+            logger.info("📝 Strategy changes will be detected through other means")
     
     async def _handle_strategy_change(self, change_data: Dict[str, Any]):
         """Handle a strategy change notification"""

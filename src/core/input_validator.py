@@ -5,7 +5,9 @@ Comprehensive validation for all API endpoints to prevent injection attacks and 
 
 import re
 import uuid
-from typing import Dict, Any, List, Optional, Union, Set
+import html
+import urllib.parse
+from typing import Dict, Any, List, Optional, Union, Set, Tuple
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from pydantic import BaseModel, Field, validator, ValidationError
@@ -57,22 +59,24 @@ class TradingValidationRules:
     
     # SQL injection patterns
     SQL_INJECTION_PATTERNS = [
-        r'union\s+select',
-        r'drop\s+table',
-        r'delete\s+from',
-        r'insert\s+into',
-        r'update\s+set',
-        r'exec\s*\(',
-        r'script\s*>',
-        r'<\s*script',
-        r'javascript:',
-        r'vbscript:',
-        r'onload\s*=',
-        r'onerror\s*=',
-        r'--\s*$',
-        r'/\*.*\*/',
-        r'xp_cmdshell',
-        r'sp_executesql'
+        r"(\bor\b|\band\b)\s+['\"]?\w+['\"]?\s*=\s*['\"]?\w+['\"]?",
+        r"union\s+select",
+        r"insert\s+into",
+        r"delete\s+from",
+        r"drop\s+table",
+        r"alter\s+table",
+        r"create\s+table",
+        r"exec(\s|\+)+(s|x)p\w+",
+        r"script\s*:",
+        r"javascript\s*:",
+        r"vbscript\s*:",
+        r"onload\s*=",
+        r"onerror\s*=",
+        r"<\s*script",
+        r"eval\s*\(",
+        r"expression\s*\(",
+        r"--\s*$",
+        r"/\*.*\*/"
     ]
     
     # XSS patterns
@@ -376,179 +380,313 @@ class SecurityValidator:
         return data
 
 class TradingInputValidator:
-    """Main input validation class for trading system"""
+    """Comprehensive input validation system"""
     
-    def __init__(self, security_level: SecurityLevel = SecurityLevel.HIGH):
-        self.security_level = security_level
-        self.sanitizer = InputSanitizer()
+    # Regex patterns for validation
+    PATTERNS = {
+        'email': r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$',
+        'symbol': r'^[A-Z]{1,10}$',
+        'user_id': r'^[a-zA-Z0-9_-]{3,50}$',
+        'order_id': r'^[A-Z0-9_-]{5,100}$',
+        'numeric': r'^-?[0-9]+\.?[0-9]*$',
+        'alphanumeric': r'^[a-zA-Z0-9]+$',
+        'safe_string': r'^[a-zA-Z0-9\s\-_.,!?()]+$'
+    }
     
-    def validate_user_activation_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate strategy activation data"""
-        try:
-            # Security checks
-            if self.security_level in [SecurityLevel.HIGH, SecurityLevel.CRITICAL]:
-                SecurityValidator.validate_request_size(data)
-                SecurityValidator.validate_nested_depth(data)
-            
-            # Validate using Pydantic model
-            if data:
-                validated = UserValidationModels.StrategyActivation(**data)
-                return validated.dict()
-            
-            return {}
-            
-        except ValidationError as e:
-            logger.warning(f"🚫 Validation failed: {e}")
-            raise HTTPException(status_code=400, detail=f"Validation error: {e}")
-        except Exception as e:
-            logger.error(f"❌ Validation error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid input data")
-    
-    def validate_strategy_creation_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate strategy creation data"""
-        try:
-            # Security checks
-            SecurityValidator.validate_request_size(data, max_size_mb=5.0)  # Larger for strategy data
-            SecurityValidator.validate_nested_depth(data)
-            
-            # Validate using Pydantic model
-            validated = AdminValidationModels.StrategyCreation(**data)
-            return validated.dict()
-            
-        except ValidationError as e:
-            logger.warning(f"🚫 Strategy validation failed: {e}")
-            raise HTTPException(status_code=400, detail=f"Strategy validation error: {e}")
-        except Exception as e:
-            logger.error(f"❌ Strategy validation error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid strategy data")
-    
-    def validate_symbol_subscription_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate symbol subscription data"""
-        try:
-            SecurityValidator.validate_request_size(data)
-            
-            validated = AdminValidationModels.SymbolSubscription(**data)
-            return validated.dict()
-            
-        except ValidationError as e:
-            logger.warning(f"🚫 Symbol validation failed: {e}")
-            raise HTTPException(status_code=400, detail=f"Symbol validation error: {e}")
-        except Exception as e:
-            logger.error(f"❌ Symbol validation error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid symbol data")
-    
-    def validate_error_resolution_data(self, error_id: str, resolution_notes: str = "") -> Dict[str, Any]:
-        """Validate error resolution data"""
-        try:
-            data = {
-                "error_id": error_id,
-                "resolution_notes": resolution_notes
-            }
-            
-            validated = ErrorHandlerValidationModels.ErrorResolution(**data)
-            return validated.dict()
-            
-        except ValidationError as e:
-            logger.warning(f"🚫 Error resolution validation failed: {e}")
-            raise HTTPException(status_code=400, detail=f"Error resolution validation error: {e}")
-        except Exception as e:
-            logger.error(f"❌ Error resolution validation error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid error resolution data")
-    
-    def validate_path_parameters(self, **params) -> Dict[str, Any]:
-        """Validate path parameters"""
-        validated = {}
+    @staticmethod
+    def validate_email(email: str) -> Tuple[bool, str]:
+        """Validate email address"""
+        if not email or not isinstance(email, str):
+            return False, "Email is required and must be a string"
         
-        for param_name, param_value in params.items():
-            if param_value is None:
+        if len(email) > 254:
+            return False, "Email is too long (max 254 characters)"
+        
+        if not re.match(TradingInputValidator.PATTERNS['email'], email.lower()):
+            return False, "Invalid email format"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_symbol(symbol: str) -> Tuple[bool, str]:
+        """Validate trading symbol"""
+        if not symbol or not isinstance(symbol, str):
+            return False, "Symbol is required and must be a string"
+        
+        symbol = symbol.upper().strip()
+        
+        if not re.match(TradingInputValidator.PATTERNS['symbol'], symbol):
+            return False, "Symbol must be 1-10 uppercase letters only"
+        
+        return True, symbol
+    
+    @staticmethod
+    def validate_user_id(user_id: str) -> Tuple[bool, str]:
+        """Validate user ID"""
+        if not user_id or not isinstance(user_id, str):
+            return False, "User ID is required and must be a string"
+        
+        user_id = user_id.strip()
+        
+        if not re.match(TradingInputValidator.PATTERNS['user_id'], user_id):
+            return False, "User ID must be 3-50 characters (letters, numbers, hyphens, underscores only)"
+        
+        return True, user_id
+    
+    @staticmethod
+    def validate_quantity(quantity: Union[str, int, float, Decimal]) -> Tuple[bool, Union[Decimal, str]]:
+        """Validate trading quantity"""
+        try:
+            if isinstance(quantity, str):
+                quantity = quantity.strip()
+                if not quantity:
+                    return False, "Quantity cannot be empty"
+            
+            decimal_qty = Decimal(str(quantity))
+            
+            if decimal_qty <= 0:
+                return False, "Quantity must be positive"
+            
+            if decimal_qty > Decimal('1000000000'):  # 1 billion max
+                return False, "Quantity is too large (max 1 billion)"
+            
+            # Check decimal places (max 8)
+            if decimal_qty.as_tuple().exponent < -8:
+                return False, "Quantity cannot have more than 8 decimal places"
+            
+            return True, decimal_qty
+            
+        except (InvalidOperation, ValueError, TypeError):
+            return False, "Quantity must be a valid number"
+    
+    @staticmethod
+    def validate_price(price: Union[str, int, float, Decimal]) -> Tuple[bool, Union[Decimal, str]]:
+        """Validate price"""
+        try:
+            if isinstance(price, str):
+                price = price.strip()
+                if not price:
+                    return False, "Price cannot be empty"
+            
+            decimal_price = Decimal(str(price))
+            
+            if decimal_price <= 0:
+                return False, "Price must be positive"
+            
+            if decimal_price > Decimal('1000000'):  # 1 million max
+                return False, "Price is too large (max 1 million)"
+            
+            # Check decimal places (max 6)
+            if decimal_price.as_tuple().exponent < -6:
+                return False, "Price cannot have more than 6 decimal places"
+            
+            return True, decimal_price
+            
+        except (InvalidOperation, ValueError, TypeError):
+            return False, "Price must be a valid number"
+    
+    @staticmethod
+    def validate_order_side(side: str) -> Tuple[bool, str]:
+        """Validate order side"""
+        if not side or not isinstance(side, str):
+            return False, "Order side is required and must be a string"
+        
+        side = side.lower().strip()
+        
+        if side not in ['buy', 'sell']:
+            return False, "Order side must be 'buy' or 'sell'"
+        
+        return True, side
+    
+    @staticmethod
+    def validate_order_type(order_type: str) -> Tuple[bool, str]:
+        """Validate order type"""
+        if not order_type or not isinstance(order_type, str):
+            return False, "Order type is required and must be a string"
+        
+        order_type = order_type.lower().strip()
+        
+        valid_types = ['market', 'limit', 'stop', 'stop_limit']
+        if order_type not in valid_types:
+            return False, f"Order type must be one of: {', '.join(valid_types)}"
+        
+        return True, order_type
+    
+    @staticmethod
+    def validate_safe_string(value: str, max_length: int = 255, allow_empty: bool = False) -> Tuple[bool, str]:
+        """Validate string for safety (no injection patterns)"""
+        if not isinstance(value, str):
+            return False, "Value must be a string"
+        
+        if not value.strip() and not allow_empty:
+            return False, "Value cannot be empty"
+        
+        if len(value) > max_length:
+            return False, f"Value is too long (max {max_length} characters)"
+        
+        # Check for SQL injection patterns
+        value_lower = value.lower()
+        for pattern in TradingValidationRules.SQL_INJECTION_PATTERNS:
+            if re.search(pattern, value_lower, re.IGNORECASE):
+                logger.warning(f"Potential injection attempt detected: {pattern}")
+                return False, "Invalid characters detected"
+        
+        # Check for basic XSS patterns
+        if '<' in value or '>' in value or 'script' in value_lower:
+            return False, "HTML/script content not allowed"
+        
+        return True, value.strip()
+    
+    @staticmethod
+    def sanitize_string(value: str) -> str:
+        """Sanitize string for safe output"""
+        if not isinstance(value, str):
+            return str(value)
+        
+        # HTML escape
+        sanitized = html.escape(value)
+        
+        # URL decode any encoded content
+        sanitized = urllib.parse.unquote(sanitized)
+        
+        # Remove null bytes
+        sanitized = sanitized.replace('\x00', '')
+        
+        return sanitized
+    
+    @staticmethod
+    def validate_datetime_string(dt_string: str) -> Tuple[bool, Union[datetime, str]]:
+        """Validate datetime string"""
+        if not dt_string or not isinstance(dt_string, str):
+            return False, "Datetime string is required"
+        
+        # Try common datetime formats
+        formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%Y-%m-%d',
+        ]
+        
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(dt_string, fmt)
+                return True, dt
+            except ValueError:
                 continue
-            
-            # Sanitize the parameter
-            if isinstance(param_value, str):
-                sanitized = self.sanitizer.sanitize_string(param_value, max_length=200)
-                
-                # Specific validation based on parameter name
-                if 'user_id' in param_name:
-                    sanitized = self.sanitizer.validate_pattern(
-                        sanitized, 
-                        TradingValidationRules.USER_ID_PATTERN,
-                        "user_id"
-                    )
-                elif 'strategy_id' in param_name:
-                    sanitized = self.sanitizer.validate_pattern(
-                        sanitized,
-                        TradingValidationRules.STRATEGY_ID_PATTERN,
-                        "strategy_id"
-                    )
-                elif 'symbol' in param_name:
-                    sanitized = self.sanitizer.validate_pattern(
-                        sanitized.upper(),
-                        TradingValidationRules.SYMBOL_PATTERN,
-                        "symbol"
-                    )
-                
-                validated[param_name] = sanitized
-            else:
-                validated[param_name] = param_value
         
-        return validated
+        return False, "Invalid datetime format"
     
-    def validate_query_parameters(self, **params) -> Dict[str, Any]:
-        """Validate query parameters"""
-        validated = {}
+    @staticmethod
+    def validate_json_structure(data: Dict[str, Any], required_fields: List[str], 
+                              optional_fields: Optional[List[str]] = None) -> Tuple[bool, str]:
+        """Validate JSON structure has required fields"""
+        if not isinstance(data, dict):
+            return False, "Data must be a dictionary"
         
-        for param_name, param_value in params.items():
-            if param_value is None:
-                continue
-            
-            # Type-specific validation
-            if param_name in ['limit', 'offset', 'hours']:
-                validated[param_name] = self.sanitizer.validate_integer(
-                    param_value, 
-                    min_value=0, 
-                    max_value=10000
-                )
-            elif param_name in ['query', 'search']:
-                validated[param_name] = self.sanitizer.sanitize_string(
-                    param_value, 
-                    max_length=500
-                )
-            else:
-                if isinstance(param_value, str):
-                    validated[param_name] = self.sanitizer.sanitize_string(
-                        param_value, 
-                        max_length=1000
-                    )
-                else:
-                    validated[param_name] = param_value
+        # Check required fields
+        missing_fields = []
+        for field in required_fields:
+            if field not in data:
+                missing_fields.append(field)
         
-        return validated
+        if missing_fields:
+            return False, f"Missing required fields: {', '.join(missing_fields)}"
+        
+        # Check for unexpected fields
+        all_allowed_fields = set(required_fields)
+        if optional_fields:
+            all_allowed_fields.update(optional_fields)
+        
+        unexpected_fields = set(data.keys()) - all_allowed_fields
+        if unexpected_fields:
+            return False, f"Unexpected fields: {', '.join(unexpected_fields)}"
+        
+        return True, ""
     
-    def detect_sql_injection(self, value: str) -> bool:
-        """Detect potential SQL injection in input"""
-        try:
-            # Check against SQL injection patterns
-            for pattern in TradingValidationRules.SQL_INJECTION_PATTERNS:
-                if re.search(pattern, value, re.IGNORECASE):
-                    logger.warning(f"🚫 SQL injection detected: {pattern}")
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error in SQL injection detection: {e}")
-            return False
-    
-    def detect_xss_attack(self, value: str) -> bool:
-        """Detect potential XSS attack in input"""
-        try:
-            # Check against XSS patterns
-            for pattern in TradingValidationRules.XSS_PATTERNS:
-                if re.search(pattern, value, re.IGNORECASE):
-                    logger.warning(f"🚫 XSS attack detected: {pattern}")
-                    return True
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error in XSS detection: {e}")
-            return False
+    @staticmethod
+    def validate_order_request(data: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+        """Comprehensive order request validation"""
+        # Define required and optional fields
+        required_fields = ['user_id', 'symbol', 'side', 'quantity', 'order_type']
+        optional_fields = ['price', 'stop_price', 'signal_id', 'strategy_id']
+        
+        # Validate JSON structure
+        valid_structure, structure_error = TradingInputValidator.validate_json_structure(
+            data, required_fields, optional_fields
+        )
+        if not valid_structure:
+            return False, structure_error, {}
+        
+        validated_data = {}
+        
+        # Validate user_id
+        valid_user, user_result = TradingInputValidator.validate_user_id(data['user_id'])
+        if not valid_user:
+            return False, f"Invalid user_id: {user_result}", {}
+        validated_data['user_id'] = user_result
+        
+        # Validate symbol
+        valid_symbol, symbol_result = TradingInputValidator.validate_symbol(data['symbol'])
+        if not valid_symbol:
+            return False, f"Invalid symbol: {symbol_result}", {}
+        validated_data['symbol'] = symbol_result
+        
+        # Validate side
+        valid_side, side_result = TradingInputValidator.validate_order_side(data['side'])
+        if not valid_side:
+            return False, f"Invalid side: {side_result}", {}
+        validated_data['side'] = side_result
+        
+        # Validate quantity
+        valid_qty, qty_result = TradingInputValidator.validate_quantity(data['quantity'])
+        if not valid_qty:
+            return False, f"Invalid quantity: {qty_result}", {}
+        validated_data['quantity'] = float(qty_result)
+        
+        # Validate order_type
+        valid_type, type_result = TradingInputValidator.validate_order_type(data['order_type'])
+        if not valid_type:
+            return False, f"Invalid order_type: {type_result}", {}
+        validated_data['order_type'] = type_result
+        
+        # Validate optional price
+        if 'price' in data and data['price'] is not None:
+            valid_price, price_result = TradingInputValidator.validate_price(data['price'])
+            if not valid_price:
+                return False, f"Invalid price: {price_result}", {}
+            validated_data['price'] = float(price_result)
+        
+        # Validate optional stop_price
+        if 'stop_price' in data and data['stop_price'] is not None:
+            valid_stop, stop_result = TradingInputValidator.validate_price(data['stop_price'])
+            if not valid_stop:
+                return False, f"Invalid stop_price: {stop_result}", {}
+            validated_data['stop_price'] = float(stop_result)
+        
+        # Validate optional signal_id
+        if 'signal_id' in data and data['signal_id'] is not None:
+            valid_signal, signal_result = TradingInputValidator.validate_safe_string(data['signal_id'], 100)
+            if not valid_signal:
+                return False, f"Invalid signal_id: {signal_result}", {}
+            validated_data['signal_id'] = signal_result
+        
+        # Validate optional strategy_id
+        if 'strategy_id' in data and data['strategy_id'] is not None:
+            valid_strategy, strategy_result = TradingInputValidator.validate_safe_string(data['strategy_id'], 100)
+            if not valid_strategy:
+                return False, f"Invalid strategy_id: {strategy_result}", {}
+            validated_data['strategy_id'] = strategy_result
+        
+        # Business logic validation
+        if validated_data['order_type'] in ['limit', 'stop_limit'] and 'price' not in validated_data:
+            return False, f"{validated_data['order_type']} orders require a price", {}
+        
+        if validated_data['order_type'] in ['stop', 'stop_limit'] and 'stop_price' not in validated_data:
+            return False, f"{validated_data['order_type']} orders require a stop_price", {}
+        
+        return True, "", validated_data
 
 # Global validator instance
 _global_validator = None
@@ -557,7 +695,7 @@ def get_input_validator(security_level: SecurityLevel = SecurityLevel.HIGH) -> T
     """Get global input validator instance"""
     global _global_validator
     if _global_validator is None:
-        _global_validator = TradingInputValidator(security_level)
+        _global_validator = TradingInputValidator()
     return _global_validator
 
 # Validation decorators

@@ -319,4 +319,7 @@ def get_smart_price_history() -> SmartPriceHistory:
 
 def get_smart_memory_manager() -> SmartPriceHistory:
     """Get global smart memory manager instance (alias for compatibility)"""
-    return get_smart_price_history() 
+    return get_smart_price_history()
+
+# Alias for backwards compatibility with tests
+SmartMemoryManager = SmartPriceHistory 

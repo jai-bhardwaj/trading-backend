@@ -46,7 +46,7 @@ class CalculationConfig:
     bb_default_std: float = 2.0
     bb_min_periods: int = 20
 
-class SafeFinancialCalculator:
+class SafeFinancialCalculations:
     """Thread-safe financial calculations with comprehensive error handling"""
     
     def __init__(self, config: CalculationConfig = None):
@@ -448,7 +448,7 @@ class FinancialIndicators:
     """High-level financial indicators using safe calculations"""
     
     def __init__(self, config: CalculationConfig = None):
-        self.calculator = SafeFinancialCalculator(config)
+        self.calculator = SafeFinancialCalculations(config)
     
     def get_rsi_signal(self, prices: List[float], period: int = 14, 
                       oversold: float = 30.0, overbought: float = 70.0) -> Dict[str, Any]:
@@ -540,11 +540,11 @@ class FinancialIndicators:
 # Global calculator instance
 _global_calculator = None
 
-def get_financial_calculator(config: CalculationConfig = None) -> SafeFinancialCalculator:
+def get_financial_calculator(config: CalculationConfig = None) -> SafeFinancialCalculations:
     """Get global financial calculator instance"""
     global _global_calculator
     if _global_calculator is None:
-        _global_calculator = SafeFinancialCalculator(config)
+        _global_calculator = SafeFinancialCalculations(config)
     return _global_calculator
 
 def get_financial_indicators(config: CalculationConfig = None) -> FinancialIndicators:

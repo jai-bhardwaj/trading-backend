@@ -15,7 +15,7 @@ from .signals import TradingSignal, SignalAction
 from .cache import EnterpriseUserStrategyCache, UserStrategyMapping  
 from .events import EventBus, Event, EventType
 from .database import get_db_manager
-from .order_sync import get_thread_safe_order_manager, ThreadSafeOrderManager
+from .order_sync import get_thread_safe_order_manager, OrderSyncManager
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,19 @@ class MultiUserOrderExecutor:
     async def _create_user_order(self, user_id: str, signal: TradingSignal) -> Optional[UserOrder]:
         """Create order for individual user with user-specific parameters (Thread-Safe)"""
         try:
+            # CRITICAL INPUT VALIDATION for live trading
+            if not user_id or not isinstance(user_id, str):
+                logger.error(f"Invalid user_id: {user_id}")
+                return None
+            
+            if not signal.symbol or len(signal.symbol) < 2:
+                logger.error(f"Invalid symbol: {signal.symbol}")
+                return None
+            
+            if signal.quantity <= 0 or signal.quantity > 10000:  # Reasonable limits
+                logger.error(f"Invalid quantity: {signal.quantity}")
+                return None
+            
             # Get user-specific strategy configuration
             user_config = await self.user_cache.get_user_strategy_config(
                 user_id, signal.strategy.strategy_id
@@ -149,9 +162,18 @@ class MultiUserOrderExecutor:
                 logger.debug(f"⚠️ Strategy not enabled for user {user_id}")
                 return None
             
-            # Calculate user-specific quantity
+            # Calculate user-specific quantity with validation
             base_quantity = signal.quantity
             user_quantity = int(base_quantity * user_config.quantity_multiplier)
+            
+            # CRITICAL: Validate calculated quantity
+            if user_quantity <= 0:
+                logger.warning(f"⚠️ Invalid calculated quantity {user_quantity} for user {user_id}")
+                return None
+            
+            if user_quantity > 50000:  # Maximum position limit
+                logger.warning(f"⚠️ Quantity {user_quantity} exceeds maximum limit for user {user_id}")
+                return None
             
             # Apply position size limits
             if user_config.max_position_size:
@@ -195,9 +217,6 @@ class MultiUserOrderExecutor:
                 status=OrderStatus.PENDING,
                 created_at=datetime.now()
             )
-            
-            # Store in legacy tracking for compatibility
-            self.pending_orders[order_id] = user_order
             
             logger.info(f"📋 Created order safely for user {user_id}: {signal.symbol} {signal.action.value} {user_quantity}")
             
@@ -318,26 +337,19 @@ class MultiUserOrderExecutor:
             )
             
             if success:
-                # Update legacy tracking for compatibility
-                if order_id in self.pending_orders:
-                    user_order = self.pending_orders[order_id]
-                    user_order.status = OrderStatus.FILLED
-                    user_order.broker_order_id = fill_data.get('broker_order_id')
-                    user_order.filled_price = fill_data.get('fill_price')
-                    user_order.filled_at = datetime.now()
-                    
-                    # Move to completed orders
-                    self.completed_orders[order_id] = user_order
-                    del self.pending_orders[order_id]
-                    
+                # Get order from thread-safe manager instead of legacy dict
+                order = await self.safe_order_manager.get_order_safely(order_id)
+                
+                if order:
                     self.orders_filled += 1
+                    logger.info(f"✅ Order filled safely for user {order.user_id}: {order.symbol} @ ₹{fill_data.get('fill_price', 0):.2f}")
                     
-                    logger.info(f"✅ Order filled safely for user {user_order.user_id}: {user_order.symbol} @ ₹{user_order.filled_price:.2f}")
-                    
-                    # Update database
-                    await self._update_order_in_db(user_order)
+                    # Update database with fill information
+                    await self._update_order_in_db_safe(order_id, fill_data)
+                else:
+                    logger.warning(f"⚠️ Order {order_id} not found in thread-safe manager")
             else:
-                logger.warning(f"⚠️ Failed to update order {order_id} to FILLED status")
+                logger.error(f"❌ Failed to update order {order_id} to FILLED status")
                 
         except Exception as e:
             logger.error(f"❌ Error handling order fill: {e}")
@@ -443,6 +455,33 @@ class MultiUserOrderExecutor:
         except Exception as e:
             logger.error(f"❌ Error updating order in database: {e}")
     
+    async def _update_order_in_db_safe(self, order_id: str, fill_data: Dict[str, Any]):
+        """Update order status in database safely"""
+        try:
+            session = self.db_manager.get_session()
+            
+            update_sql = """
+                UPDATE order_executions 
+                SET status = %s, broker_order_id = %s, filled_price = %s, 
+                    filled_at = %s, error_message = %s
+                WHERE order_id = %s
+            """
+            
+            session.execute(update_sql, (
+                'FILLED',
+                fill_data.get('broker_order_id'),
+                fill_data.get('fill_price'),
+                datetime.now(),
+                None,
+                order_id
+            ))
+            
+            session.commit()
+            session.close()
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating order in database: {e}")
+    
     def get_order_statistics(self) -> Dict[str, Any]:
         """Get order execution statistics"""
         return {
@@ -497,14 +536,44 @@ class MultiUserOrderExecutor:
         return cancelled_count
 
 class OrderManager:
-    """
-    Simple order manager - legacy interface for compatibility
-    """
+    """Unified order management system"""
     
-    def __init__(self, event_bus: EventBus):
+    def __init__(self, event_bus):
         self.event_bus = event_bus
-        self.orders = {}
+        self.order_sync_manager = get_thread_safe_order_manager()
+        self.db_manager = get_db_manager()
+        self.orders = {}  # For compatibility
+        
+        # Setup event handlers
+        self.event_bus.subscribe(EventType.ORDER_PLACED, self._handle_order_placed)
+        self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled)
+        self.event_bus.subscribe(EventType.ORDER_REJECTED, self._handle_order_rejected)
+        
         logger.info("📋 Order Manager initialized")
+    
+    async def _handle_order_placed(self, event: Event):
+        """Handle order placed event"""
+        try:
+            order_data = event.data
+            logger.info(f"📝 Processing order: {order_data}")
+        except Exception as e:
+            logger.error(f"❌ Error handling order placed: {e}")
+    
+    async def _handle_order_filled(self, event: Event):
+        """Handle order filled event"""
+        try:
+            order_data = event.data
+            logger.info(f"✅ Order filled: {order_data}")
+        except Exception as e:
+            logger.error(f"❌ Error handling order filled: {e}")
+    
+    async def _handle_order_rejected(self, event: Event):
+        """Handle order rejected event"""
+        try:
+            order_data = event.data
+            logger.error(f"❌ Order rejected: {order_data}")
+        except Exception as e:
+            logger.error(f"❌ Error handling order rejected: {e}")
     
     async def place_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """Place order through event system"""

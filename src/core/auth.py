@@ -51,7 +51,79 @@ class SecurityConfig:
         "Referrer-Policy": "strict-origin-when-cross-origin"
     }
 
-class SecureAuthenticator:
+class SecurityHeaders:
+    """Security headers management class"""
+    
+    @staticmethod
+    def get_headers() -> Dict[str, str]:
+        """Get security headers"""
+        return SecurityConfig.SECURITY_HEADERS.copy()
+    
+    @staticmethod
+    def apply_headers(response, headers: Dict[str, str] = None):
+        """Apply security headers to response"""
+        headers_to_apply = headers or SecurityConfig.SECURITY_HEADERS
+        for header_name, header_value in headers_to_apply.items():
+            response.headers[header_name] = header_value
+        return response
+
+class RateLimiter:
+    """Rate limiting functionality"""
+    
+    def __init__(self, redis_url: str = "redis://localhost:6379/2"):
+        self.redis_url = redis_url
+        self.redis_client = None
+        self.config = SecurityConfig()
+        
+        # In-memory fallback
+        self.requests = {}
+        
+    async def initialize(self):
+        """Initialize Redis connection"""
+        try:
+            self.redis_client = redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5
+            )
+            await self.redis_client.ping()
+            logger.info("✅ RateLimiter Redis connected")
+        except Exception as e:
+            logger.warning(f"⚠️ Redis unavailable for rate limiting, using in-memory fallback: {e}")
+            self.redis_client = None
+    
+    async def check_rate_limit(self, identifier: str, limit: int = 60, window: int = 60) -> bool:
+        """Check if request is within rate limits"""
+        current_time = int(time.time())
+        
+        try:
+            if self.redis_client:
+                key = f"rate_limit:{identifier}"
+                async with self.redis_client.pipeline() as pipe:
+                    pipe.zremrangebyscore(key, 0, current_time - window)
+                    pipe.zadd(key, {str(current_time): current_time})
+                    pipe.zcard(key)
+                    pipe.expire(key, window)
+                    
+                    results = await pipe.execute()
+                    request_count = results[2]
+                    
+                return request_count <= limit
+            else:
+                # In-memory fallback
+                requests = self.requests.get(identifier, [])
+                requests = [t for t in requests if current_time - t < window]
+                requests.append(current_time)
+                self.requests[identifier] = requests
+                
+                return len(requests) <= limit
+                
+        except Exception as e:
+            logger.error(f"❌ Rate limit check error: {e}")
+            return True
+
+class AuthManager:
     """Secure JWT-based authentication system"""
     
     def __init__(self, redis_url: str = "redis://localhost:6379/2"):
@@ -293,19 +365,19 @@ class SecureAuthenticator:
 # Global authenticator instance
 _authenticator = None
 
-async def get_authenticator() -> SecureAuthenticator:
+async def get_authenticator() -> AuthManager:
     """Get global authenticator instance"""
     global _authenticator
     if _authenticator is None:
-        _authenticator = SecureAuthenticator()
+        _authenticator = AuthManager()
         await _authenticator.initialize()
     return _authenticator
 
-def get_auth_manager() -> SecureAuthenticator:
+def get_auth_manager() -> AuthManager:
     """Get global auth manager instance (synchronous version)"""
     global _authenticator
     if _authenticator is None:
-        _authenticator = SecureAuthenticator()
+        _authenticator = AuthManager()
         # Note: Redis initialization will happen on first use
     return _authenticator
 

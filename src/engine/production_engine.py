@@ -11,7 +11,8 @@ import uuid
 import json
 import redis
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from enum import Enum
@@ -26,15 +27,15 @@ import uvicorn
 from src.core.engine import LightweightTradingEngine, EngineConfig
 from src.core.strategy_manager import StrategyConfig, BaseStrategy
 
-# Import the real-time strategy manager
-from src.core.realtime_strategy_manager import RealTimeStrategyManager
+# Import the real-time strategy manager from the correct location
+from src.core.strategies import RealTimeStrategyManager
 from src.core.trading_database import get_trading_db_manager, close_trading_db_manager
 
 # Import existing components
 from src.core.events import Event
 
 # Import test strategy
-from src.strategies.test_order_strategy import TestOrderStrategy
+# Removed test strategy import for production
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
@@ -496,8 +497,7 @@ class ProductionStrategyMarketplace:
         self.strategy_classes = {
             'RSIDMIStrategy': RSIDMIStrategy,
             'SwingMomentumStrategy': SwingMomentumStrategy,
-            'BTSTMomentumStrategy': BTSTMomentumStrategy,
-            'TestOrderStrategy': TestOrderStrategy
+            'BTSTMomentumStrategy': BTSTMomentumStrategy
         }
         self._create_production_strategies()
     
@@ -556,22 +556,7 @@ class ProductionStrategyMarketplace:
                 },
                 strategy_class="BTSTMomentumStrategy"
             ),
-            RealStrategyTemplate(
-                strategy_id="test_order_strategy",
-                name="Live Order Test Strategy",
-                description="Places small test orders to verify broker integration",
-                category="test",
-                risk_level="low",
-                min_capital=5000,
-                expected_return_annual=0.0,
-                max_drawdown=0.01,
-                symbols=["RELIANCE", "TCS", "INFY"],
-                parameters={
-                    "test_quantity": 1,
-                    "max_test_orders": 2
-                },
-                strategy_class="TestOrderStrategy"
-            )
+# Test strategy removed for production deployment
         ]
         
         for strategy in strategies:
@@ -697,22 +682,33 @@ class ProductionTradingEngine:
     
     def __init__(self, database_url: str = None, redis_url: str = None):
         # Database configuration
-        self.database_url = database_url or os.getenv('DATABASE_URL', 'postgresql://user:password@localhost/trading_db')
-        self.redis_url = redis_url or os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        self.database_url = database_url or os.getenv('DATABASE_URL')
+        self.redis_url = redis_url or "redis://localhost:6379/0"
         
-        # Initialize database marketplace instead of hardcoded one
-        self.marketplace = DatabaseStrategyMarketplace(self.database_url, self.redis_url)
-        self.broker = AngelOneBrokerManager()
+        # Initialize trading statistics
+        self.signals_processed = 0
+        self.orders_placed = 0
+        self.successful_orders = 0
+        
+        # Trading components
         self.users: Dict[str, UserProfile] = {}
         self.api_key_to_user: Dict[str, str] = {}
-        self.user_strategies: Dict[str, List[UserStrategy]] = {}
         self.user_engines: Dict[str, LightweightTradingEngine] = {}
+        self.user_strategies: Dict[str, List[UserStrategy]] = defaultdict(list)
         
-        # Market data and execution loop
+        # Production marketplace
+        self.marketplace = ProductionStrategyMarketplace()
+        
+        # Database strategy marketplace for real-time strategy management
+        self.db_marketplace = DatabaseStrategyMarketplace(database_url, redis_url)
+        
+        # Initialize broker manager
+        self.broker = AngelOneBrokerManager()
+        
+        # Running state
         self.is_running = False
-        self.market_data_cache = {}
         
-        # Create demo users with real broker credentials
+        # Initialize production users
         self._create_production_users()
     
     def _create_production_users(self):
@@ -742,7 +738,7 @@ class ProductionTradingEngine:
     async def initialize(self):
         """Initialize production engine with database marketplace"""
         # Initialize database marketplace first
-        await self.marketplace.initialize()
+        await self.db_marketplace.initialize()
         
         # Initialize broker
         await self.broker.initialize()
@@ -755,7 +751,7 @@ class ProductionTradingEngine:
     async def _setup_initial_strategies(self):
         """Setup initial strategies in database if empty"""
         try:
-            current_strategies = self.marketplace.strategy_manager.get_all_strategies()
+            current_strategies = self.db_marketplace.strategy_manager.get_all_strategies()
             
             if not current_strategies:
                 logger.info("📦 Setting up initial strategies in database...")
@@ -826,7 +822,7 @@ class ProductionTradingEngine:
                 ]
                 
                 for strategy in initial_strategies:
-                    await self.marketplace.create_strategy_in_db(strategy)
+                    await self.db_marketplace.create_strategy_in_db(strategy)
                 
                 logger.info(f"✅ Created {len(initial_strategies)} initial strategies in database")
             
@@ -872,7 +868,7 @@ class ProductionTradingEngine:
             if user_id not in self.users:
                 return False
             
-            template = self.marketplace.strategies.get(strategy_id)
+            template = self.db_marketplace.strategies.get(strategy_id)
             if not template:
                 return False
             
@@ -892,7 +888,7 @@ class ProductionTradingEngine:
             user_strats.append(user_strategy)
             
             # Create real strategy instance
-            strategy_class = self.marketplace.get_strategy_class(strategy_id)
+            strategy_class = self.db_marketplace.get_strategy_class(strategy_id)
             if not strategy_class:
                 logger.error(f"Strategy class not found for {strategy_id}")
                 return False
@@ -939,6 +935,7 @@ class ProductionTradingEngine:
         self.is_running = True
         
         # Initialize real-time strategy manager
+        import os
         from src.core.strategies import RealTimeStrategyManager
         from src.core.orders import MultiUserOrderExecutor
         from src.core.cache import EnterpriseUserStrategyCache
@@ -952,7 +949,7 @@ class ProductionTradingEngine:
         
         # Initialize broker manager with proper config
         class BrokerConfig:
-            enable_paper_trading = False  # LIVE TRADING
+            enable_paper_trading = os.getenv('ENABLE_PAPER_TRADING', 'false').lower() == 'true'
         
         self.broker = BrokerManager(self.event_bus, BrokerConfig())
         
@@ -1096,17 +1093,31 @@ class ProductionTradingEngine:
         """Log execution statistics"""
         try:
             broker_stats = self.broker.get_stats()
-            order_stats = self.order_executor.get_order_statistics()
+            
+            # Get order statistics if order executor is available
+            order_stats = {}
+            if hasattr(self, 'order_executor') and self.order_executor:
+                order_stats = self.order_executor.get_order_statistics()
+            else:
+                # Use local statistics
+                order_stats = {
+                    'signals_processed': self.signals_processed,
+                    'orders_created': 0,
+                    'orders_placed': 0,
+                    'orders_filled': 0,
+                    'orders_rejected': 0,
+                    'success_rate': 0.0
+                }
             
             logger.info("📊 PRODUCTION TRADING STATISTICS:")
             logger.info(f"   🔥 Signals Processed: {order_stats['signals_processed']}")
-            logger.info(f"   📋 Orders Created: {order_stats['orders_created']}")
-            logger.info(f"   📤 Orders Placed: {order_stats['orders_placed']}")
-            logger.info(f"   ✅ Orders Filled: {order_stats['orders_filled']}")
-            logger.info(f"   ❌ Orders Rejected: {order_stats['orders_rejected']}")
-            logger.info(f"   📈 Success Rate: {order_stats['success_rate']:.1f}%")
-            logger.info(f"   🏦 Broker Authenticated: {broker_stats['authenticated']}")
-            logger.info(f"   📝 Paper Trading: {broker_stats['paper_trading']}")
+            logger.info(f"   📋 Orders Created: {order_stats.get('orders_created', 0)}")
+            logger.info(f"   📤 Orders Placed: {order_stats.get('orders_placed', 0)}")
+            logger.info(f"   ✅ Orders Filled: {order_stats.get('orders_filled', 0)}")
+            logger.info(f"   ❌ Orders Rejected: {order_stats.get('orders_rejected', 0)}")
+            logger.info(f"   📈 Success Rate: {order_stats.get('success_rate', 0.0):.1f}%")
+            logger.info(f"   🏦 Broker Connected: {broker_stats.get('broker_connected', False)}")
+            logger.info(f"   📝 Paper Trading: {broker_stats.get('paper_trading', True)}")
             
         except Exception as e:
             logger.error(f"❌ Error logging stats: {e}")
@@ -1126,7 +1137,7 @@ class ProductionTradingEngine:
         
         # Get strategies with status
         marketplace_strategies = []
-        for template in self.marketplace.strategies.values():
+        for template in self.db_marketplace.strategies.values():
             user_strategy = next((s for s in user_strats if s.strategy_id == template.strategy_id), None)
             
             marketplace_strategies.append({
@@ -1155,7 +1166,7 @@ class ProductionTradingEngine:
                 "risk_tolerance": user.risk_tolerance
             },
             "summary": {
-                "total_strategies_available": len(self.marketplace.strategies),
+                "total_strategies_available": len(self.db_marketplace.strategies),
                 "user_active_strategies": len([s for s in user_strats if s.status == StrategyStatus.ACTIVE]),
                 "total_orders_placed": sum(s.total_orders for s in user_strats),
                 "total_pnl": sum(s.total_pnl for s in user_strats),
@@ -1769,7 +1780,7 @@ async def create_strategy_endpoint(strategy_data: Dict[str, Any]):
         
         validated_strategy_data = validator.validate_strategy_creation_data(strategy_data)
         
-        strategy_id = await production_engine.marketplace.create_strategy_in_db(validated_strategy_data)
+        strategy_id = await production_engine.db_marketplace.create_strategy_in_db(validated_strategy_data)
         return {
             "success": True,
             "strategy_id": strategy_id,
@@ -1799,7 +1810,7 @@ async def update_strategy_endpoint(strategy_name: str, config_data: Dict[str, An
         # Validate strategy update data (subset of creation data)
         validated_config_data = validator.validate_strategy_creation_data(config_data)
         
-        success = await production_engine.marketplace.update_strategy_in_db(strategy_name, validated_config_data)
+        success = await production_engine.db_marketplace.update_strategy_in_db(strategy_name, validated_config_data)
         if success:
             return {
                 "success": True,
@@ -1820,8 +1831,8 @@ async def force_reload_strategies():
         raise HTTPException(status_code=503, detail="Engine not initialized")
     
     try:
-        cache_version = await production_engine.marketplace.strategy_manager.force_reload()
-        pool_status = production_engine.marketplace.strategy_manager.get_db_pool_status()
+        cache_version = await production_engine.db_marketplace.strategy_manager.force_reload()
+        pool_status = production_engine.db_marketplace.strategy_manager.get_db_pool_status()
         return {
             "success": True,
             "cache_version": cache_version,
@@ -1839,7 +1850,7 @@ async def get_database_pool_status():
         raise HTTPException(status_code=503, detail="Engine not initialized")
     
     try:
-        pool_status = production_engine.marketplace.strategy_manager.get_db_pool_status()
+        pool_status = production_engine.db_marketplace.strategy_manager.get_db_pool_status()
         return {
             "success": True,
             "pool_status": pool_status,

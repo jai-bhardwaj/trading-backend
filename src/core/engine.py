@@ -45,7 +45,7 @@ class LightweightTradingEngine:
         # Core managers (lightweight)
         self.event_bus = EventBus()
         self.strategy_manager = StrategyManager(self.event_bus, config)
-        self.order_manager = OrderManager(self.event_bus, config)
+        self.order_manager = OrderManager(self.event_bus)
         
         # Use singleton broker if configured, otherwise create own data manager
         if config.use_singleton_broker:

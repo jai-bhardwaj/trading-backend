@@ -444,7 +444,122 @@ class BrokerManager:
             'orders_sent': self.orders_sent,
             'orders_filled': self.orders_filled,
             'orders_rejected': self.orders_rejected,
-            'success_rate': self.orders_filled / max(1, self.orders_sent) * 100,
-            'authenticated': bool(self.access_token),
-            'paper_trading': self.broker_config.paper_trading
-        } 
+            'broker_connected': self.broker_connected,
+            'paper_trading': self.broker_config.paper_trading,
+            'rate_limit_per_second': self.broker_config.rate_limit_per_second
+        }
+    
+    async def get_live_market_data(self, symbols: List[str] = None) -> Dict[str, Any]:
+        """Get live market data from broker"""
+        try:
+            if self.broker_config.paper_trading:
+                # Return simulated market data for paper trading
+                return self._generate_simulated_market_data(symbols)
+            else:
+                # Return live market data from Angel One
+                return await self._get_angel_one_market_data(symbols)
+        except Exception as e:
+            logger.error(f"❌ Error getting market data: {e}")
+            return {}
+    
+    def _generate_simulated_market_data(self, symbols: List[str] = None) -> Dict[str, Any]:
+        """Generate simulated market data for testing"""
+        import random
+        from datetime import datetime
+        
+        # Use provided symbols or default ones
+        if symbols is None:
+            symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK']
+        
+        market_data = {}
+        
+        base_prices = {
+            'RELIANCE': 2450.75,
+            'TCS': 3890.50, 
+            'INFY': 1756.30,
+            'HDFCBANK': 1642.80,
+            'ICICIBANK': 1198.45
+        }
+        
+        for symbol in symbols:
+            base_price = base_prices.get(symbol, 1000.0)  # Default price if symbol not found
+            volatility = random.uniform(-0.02, 0.02)  # 2% max volatility
+            current_price = base_price * (1 + volatility)
+            
+            market_data[symbol] = {
+                'symbol': symbol,
+                'price': round(current_price, 2),
+                'high': round(current_price * 1.01, 2),
+                'low': round(current_price * 0.99, 2),
+                'volume': random.randint(100000, 1000000),
+                'timestamp': datetime.now().isoformat(),
+                'change': round(volatility * 100, 3),
+                'change_percent': round(volatility * 100, 3)
+            }
+        
+        return market_data
+    
+    async def _get_angel_one_market_data(self, symbols: List[str] = None) -> Dict[str, Any]:
+        """Get live market data from Angel One API"""
+        try:
+            if not self.access_token:
+                logger.warning("⚠️ No Angel One access token - returning empty market data")
+                return {}
+            
+            # Angel One market data API endpoint
+            url = "https://smartapi.angelbroking.com/rest/secure/angelbroking/market/v1/quote/"
+            
+            headers = {
+                'Authorization': f'Bearer {self.access_token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-UserType': 'USER',
+                'X-SourceID': 'WEB',
+                'X-ClientLocalIP': '127.0.0.1',
+                'X-ClientPublicIP': '127.0.0.1'
+            }
+            
+            # Get quotes for popular stocks
+            if symbols is None:
+                symbols = ['3045', '11536', '1594', '1333', '4963']  # RELIANCE, TCS, INFY, HDFC, ICICI tokens
+            
+            market_data = {}
+            
+            for token in symbols:
+                try:
+                    payload = {
+                        "mode": "FULL",
+                        "exchangeTokens": {
+                            "NSE": [token]
+                        }
+                    }
+                    
+                    response = requests.post(url, json=payload, headers=headers, timeout=10)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('status') and data.get('data'):
+                            quote_data = data['data']['fetched'][0]
+                            symbol_name = quote_data.get('tradingSymbol', f'TOKEN_{token}')
+                            
+                            market_data[symbol_name] = {
+                                'symbol': symbol_name,
+                                'price': float(quote_data.get('ltp', 0)),
+                                'high': float(quote_data.get('high', 0)),
+                                'low': float(quote_data.get('low', 0)),
+                                'volume': int(quote_data.get('volume', 0)),
+                                'timestamp': datetime.now().isoformat(),
+                                'change': float(quote_data.get('change', 0)),
+                                'change_percent': float(quote_data.get('pChange', 0))
+                            }
+                    
+                    await asyncio.sleep(0.1)  # Rate limiting
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Error getting quote for token {token}: {e}")
+            
+            return market_data
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting Angel One market data: {e}")
+            return {} 

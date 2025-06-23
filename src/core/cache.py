@@ -12,6 +12,8 @@ from typing import Set, List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 import msgpack  # Faster than JSON for binary data
+import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,97 @@ class UserStrategyMapping:
     def __post_init__(self):
         if self.last_updated is None:
             self.last_updated = datetime.utcnow()
+
+class CacheManager:
+    """Unified cache management with Redis fallback to in-memory"""
+    
+    def __init__(self, redis_url: str = None):
+        self.redis_url = redis_url or os.getenv('REDIS_URL', 'redis://localhost:6379')
+        self.redis_client = None
+        self.memory_cache = {}  # Fallback in-memory cache
+        self.use_redis = False
+        
+        try:
+            # Use synchronous Redis client
+            self.redis_client = redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
+                health_check_interval=30
+            )
+            
+            # Test connection synchronously
+            self.redis_client.ping()
+            self.use_redis = True
+            logger.info("✅ Redis connection established")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Redis connection failed: {e}")
+            logger.info("📝 Falling back to in-memory cache")
+            self.use_redis = False
+            # Don't raise exception, just use memory cache
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Get value from cache"""
+        try:
+            if self.use_redis and self.redis_client:
+                value = self.redis_client.get(key)
+                if value:
+                    return json.loads(value)
+            else:
+                return self.memory_cache.get(key)
+        except Exception as e:
+            logger.error(f"Cache get error: {e}")
+            return self.memory_cache.get(key)
+        return None
+    
+    def set(self, key: str, value: Any, expire_seconds: int = 3600):
+        """Set value in cache"""
+        try:
+            if self.use_redis and self.redis_client:
+                self.redis_client.setex(key, expire_seconds, json.dumps(value))
+            else:
+                # Store in memory with expiry timestamp
+                self.memory_cache[key] = {
+                    'value': value,
+                    'expires': time.time() + expire_seconds
+                }
+            return True
+        except Exception as e:
+            logger.error(f"Cache set error: {e}")
+            # Always fallback to memory cache
+            self.memory_cache[key] = {
+                'value': value,
+                'expires': time.time() + expire_seconds
+            }
+            return False
+    
+    def delete(self, key: str):
+        """Delete value from cache"""
+        try:
+            if self.use_redis and self.redis_client:
+                self.redis_client.delete(key)
+            self.memory_cache.pop(key, None)
+        except Exception as e:
+            logger.error(f"Cache delete error: {e}")
+    
+    def cleanup_memory_cache(self):
+        """Clean up expired entries from memory cache"""
+        current_time = time.time()
+        expired_keys = []
+        
+        for key, data in self.memory_cache.items():
+            if isinstance(data, dict) and 'expires' in data:
+                if current_time > data['expires']:
+                    expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self.memory_cache[key]
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
 
 class EnterpriseUserStrategyCache:
     """
@@ -57,19 +150,25 @@ class EnterpriseUserStrategyCache:
         self.auto_refresh_interval = 300  # 5 minutes
         self.cache_version = 1
         
+        # Cache manager
+        self.cache_manager = CacheManager()
+        
     async def initialize(self):
         """Initialize Redis connection pool"""
         try:
-            self.redis_pool = redis.ConnectionPool.from_url(
+            # Use async Redis client
+            import redis.asyncio as aioredis
+            
+            self.redis_client = aioredis.from_url(
                 self.redis_url,
-                max_connections=20,
-                decode_responses=True
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5
             )
-            self.redis_client = redis.Redis(connection_pool=self.redis_pool)
             
             # Test connection
             await self.redis_client.ping()
-            logger.info("✅ Redis connection established")
+            logger.info("✅ Redis async connection established")
             
             # Initialize cache version
             current_version = await self.redis_client.get(self.CACHE_VERSION_KEY)
@@ -82,8 +181,9 @@ class EnterpriseUserStrategyCache:
             asyncio.create_task(self._auto_refresh_task())
             
         except Exception as e:
-            logger.error(f"❌ Redis initialization failed: {e}")
-            raise
+            logger.warning(f"⚠️ Redis async initialization failed: {e}")
+            logger.info("📝 Using fallback cache manager")
+            # Don't raise exception, system can work without Redis
     
     async def shutdown(self):
         """Cleanup resources"""
