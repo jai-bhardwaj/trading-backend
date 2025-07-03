@@ -2,6 +2,8 @@
 # Production-ready microservices architecture
 # Built with Google/Meta standards
 
+version: "3.8"
+
 networks:
   trading-network:
     driver: bridge
@@ -46,18 +48,18 @@ services:
 
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-gateway
     command: python services/gateway/gateway.py
-    env_file:
-      - .env
     ports:
       - "8000:8000"
     environment:
       - SERVICE_NAME=gateway
       - SERVICE_PORT=8000
       - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     depends_on:
       redis:
         condition: service_healthy
@@ -71,18 +73,19 @@ services:
 
   auth:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-auth
     command: python services/auth/user_service.py
-    env_file:
-      - .env
     ports:
       - "8001:8001"
     environment:
       - SERVICE_NAME=auth
       - SERVICE_PORT=8001
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-here}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
     depends_on:
       redis:
         condition: service_healthy
@@ -96,18 +99,21 @@ services:
 
   market-data:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-market-data
     command: python services/market-data/market_service.py
-    env_file:
-      - .env
     ports:
       - "8002:8002"
     environment:
       - SERVICE_NAME=market-data
       - SERVICE_PORT=8002
       - REDIS_URL=redis://redis:6379
+      - ANGEL_ONE_API_KEY=${ANGEL_ONE_API_KEY:-}
+      - ANGEL_ONE_CLIENT_ID=${ANGEL_ONE_CLIENT_ID:-}
+      - ANGEL_ONE_CLIENT_SECRET=${ANGEL_ONE_CLIENT_SECRET:-}
+      - ANGEL_ONE_TOTP_SECRET=${ANGEL_ONE_TOTP_SECRET:-}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
     depends_on:
       redis:
         condition: service_healthy
@@ -121,18 +127,19 @@ services:
 
   strategy-engine:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-strategy-engine
     command: python services/strategy-engine/strategy_engine.py
-    env_file:
-      - .env
     ports:
       - "8003:8003"
     environment:
       - SERVICE_NAME=strategy-engine
       - SERVICE_PORT=8003
       - REDIS_URL=redis://redis:6379
+      - MAX_CONCURRENT_STRATEGIES=50
+      - STRATEGY_EXECUTION_THREADS=32
+      - ENVIRONMENT=${ENVIRONMENT:-production}
     depends_on:
       redis:
         condition: service_healthy
@@ -146,18 +153,23 @@ services:
 
   order-management:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-order-management
     command: python services/order-management/order_manager.py
-    env_file:
-      - .env
     ports:
       - "8004:8004"
     environment:
       - SERVICE_NAME=order-management
       - SERVICE_PORT=8004
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL}
+      - ANGEL_ONE_API_KEY=${ANGEL_ONE_API_KEY:-}
+      - ANGEL_ONE_CLIENT_ID=${ANGEL_ONE_CLIENT_ID:-}
+      - ANGEL_ONE_CLIENT_SECRET=${ANGEL_ONE_CLIENT_SECRET:-}
+      - ORDER_PROCESSING_THREADS=16
+      - MAX_ORDERS_PER_SECOND=1000
+      - ENVIRONMENT=${ENVIRONMENT:-production}
     depends_on:
       redis:
         condition: service_healthy
@@ -171,18 +183,18 @@ services:
 
   notification:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.base
     container_name: trading-notification
     command: python services/notification/notification_service.py
-    env_file:
-      - .env
     ports:
       - "8005:8005"
     environment:
       - SERVICE_NAME=notification
       - SERVICE_PORT=8005
       - REDIS_URL=redis://redis:6379
+      - NOTIFICATION_WORKERS=8
+      - ENVIRONMENT=${ENVIRONMENT:-production}
     depends_on:
       redis:
         condition: service_healthy
