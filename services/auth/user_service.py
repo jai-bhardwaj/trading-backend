@@ -20,6 +20,11 @@ import os
 from dataclasses import dataclass, field
 import json
 from dotenv import load_dotenv
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from shared.common.security import SecurityManager, RateLimiter, AuditLogger
+from shared.common.error_handling import with_circuit_breaker, with_retry
+from contextlib import asynccontextmanager
 
 # Load environment variables from .env file
 load_dotenv()
@@ -289,27 +294,19 @@ class MockUserRepository:
         """Get all users from memory"""
         return [user.copy() for user in self.users.values() if user["enabled"]]
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="User Management Service",
-    description="Authentication and User Profile Management", 
-    version="1.0.0"
-)
-
 # Global components
 db_pool = None
 redis_client = None
 user_repo = None
 user_session = None
 security = HTTPBearer()
+security_manager = None
+rate_limiter = None
+audit_logger = None
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """Extract current user from JWT token"""
-    return await user_session.validate_token(credentials.credentials)
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and Redis connections"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and cleanup database and Redis connections"""
     global db_pool, redis_client, user_repo, user_session
     
     try:
@@ -326,12 +323,12 @@ async def startup_event():
             logger.info("✅ Database connected")
             
             # Initialize components with database
-        user_repo = UserRepository(db_pool)
-        
-        # Create tables
-        await user_repo.create_user_table()
-        logger.info("✅ Database tables created")
-        
+            user_repo = UserRepository(db_pool)
+            
+            # Create tables
+            await user_repo.create_user_table()
+            logger.info("✅ Database tables created")
+            
             # Create default users
             await create_default_users()
             
@@ -346,11 +343,37 @@ async def startup_event():
         # Initialize user session (works with or without database)
         user_session = UserSession(redis_client)
         
+        # Initialize security components
+        security_manager = SecurityManager(redis_client, config.JWT_SECRET)
+        rate_limiter = RateLimiter(redis_client)
+        audit_logger = AuditLogger(redis_client)
+        
         logger.info("✅ User Service ready on port 8001")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize User Service: {e}")
         raise
+    
+    yield
+    
+    # Cleanup
+    if db_pool:
+        await db_pool.close()
+    if redis_client:
+        await redis_client.close()
+    logger.info("🔄 User Service shutting down...")
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="User Management Service",
+    description="Authentication and User Profile Management", 
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Extract current user from JWT token"""
+    return await user_session.validate_token(credentials.credentials)
 
 async def create_default_users():
     """Create default production users"""
@@ -407,24 +430,54 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {e}")
 
 @app.post("/auth/login", response_model=LoginResponse)
-async def login(login_request: LoginRequest):
+async def login(login_request: LoginRequest, request: Request):
     """Authenticate user and return JWT tokens"""
     try:
+        # Rate limiting check
+        client_ip = request.client.host
+        allowed = await rate_limiter.is_allowed(
+            login_request.user_id, 
+            "login_attempts", 
+            limit=5, 
+            window=300
+        )
+        
+        if not allowed:
+            raise HTTPException(
+                status_code=429, 
+                detail="Too many login attempts. Please try again later."
+            )
+        
         # Validate API key
         user = await user_repo.get_user_by_api_key(login_request.api_key)
         if not user or user["user_id"] != login_request.user_id:
+            # Log failed login attempt
+            await audit_logger.log_login_attempt(
+                login_request.user_id, 
+                success=False, 
+                ip_address=client_ip
+            )
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         # Update last login
         await user_repo.update_last_login(user["user_id"])
         
-        # Create session
-        tokens = await user_session.create_session(user["user_id"])
+        # Create secure session
+        session = await security_manager.create_secure_session(
+            user["user_id"], 
+            ["trading", "dashboard", "marketplace"]
+        )
+        
+        # Log successful login
+        await audit_logger.log_login_attempt(
+            user["user_id"], 
+            success=True, 
+            ip_address=client_ip
+        )
         
         return LoginResponse(
-            access_token=tokens["access_token"],
-            refresh_token=tokens["refresh_token"],
-            expires_in=config.JWT_EXPIRY_HOURS * 3600,
+            access_token=session["access_token"],
+            expires_in=session["expires_in"],
             user_id=user["user_id"],
             permissions=["trading", "dashboard", "marketplace"]
         )
@@ -456,6 +509,14 @@ async def get_all_users():
     users = await user_repo.get_all_users()
     return {"users": users}
 
+@app.get("/users/{user_id}")
+async def get_user_by_id(user_id: str):
+    """Get user details by user_id (for broker credentials)"""
+    user = await user_repo.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
 @app.get("/")
 async def service_info():
     """Service information"""
@@ -468,6 +529,7 @@ async def service_info():
             "POST /auth/logout", 
             "GET /dashboard",
             "GET /users",
+            "GET /users/{user_id}",
             "GET /health"
         ]
     }

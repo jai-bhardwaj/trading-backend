@@ -1,0 +1,34 @@
+[Unit]
+Description=Pinnacle Trading System
+After=network.target redis.service postgresql.service
+Wants=redis.service postgresql.service
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/pinnacle-trading
+Environment=PATH=/opt/pinnacle-trading/venv/bin
+ExecStart=/opt/pinnacle-trading/venv/bin/python trading_system.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pinnacle-trading
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pinnacle-trading/logs /opt/pinnacle-trading/data
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=3G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target 

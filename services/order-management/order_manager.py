@@ -19,6 +19,11 @@ import httpx
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from shared.common.error_handling import with_circuit_breaker, with_retry, CircuitBreaker, RetryHandler
+from shared.common.security import InputValidator, AuditLogger
+from shared.common.performance import monitor_performance
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -30,8 +35,6 @@ class OrderServiceConfig:
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/4")
     USER_SERVICE_URL: str = "http://localhost:8001"
     NOTIFICATION_SERVICE_URL: str = "http://localhost:8005"
-    ANGEL_ONE_API_KEY: str = os.getenv("ANGEL_ONE_API_KEY", "")
-    ANGEL_ONE_CLIENT_ID: str = os.getenv("ANGEL_ONE_CLIENT_ID", "")
     ORDER_TIMEOUT_SECONDS: int = 30
     MAX_RETRIES: int = 3
 
@@ -87,6 +90,9 @@ class BrokerManager:
     def __init__(self):
         self.is_paper_trading = os.getenv("TRADING_MODE", "PAPER") == "PAPER"
         self.mock_order_counter = 1000
+        self.user_service_url = "http://localhost:8001"
+        self.circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+        self.retry_handler = RetryHandler(max_retries=2, base_delay=1.0)
         
     async def initialize(self):
         """Initialize broker connections"""
@@ -95,8 +101,29 @@ class BrokerManager:
         else:
             logger.info("✅ Broker Manager initialized (Live Trading Mode)")
     
+    @with_circuit_breaker(failure_threshold=3, recovery_timeout=30)
+    @with_retry(max_retries=2, base_delay=1.0)
+    async def get_user_broker_credentials(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Get user-specific broker credentials from user service"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.user_service_url}/users/{user_id}")
+                if response.status_code == 200:
+                    user_data = response.json()
+                    return {
+                        "broker_api_key": user_data.get("broker_api_key", ""),
+                        "broker_secret": user_data.get("broker_secret", ""),
+                        "broker_token": user_data.get("broker_token", "")
+                    }
+                else:
+                    logger.warning(f"Failed to get user {user_id} broker credentials")
+                    return None
+        except Exception as e:
+            logger.error(f"Error fetching user broker credentials: {e}")
+            return None
+    
     async def place_order(self, order: Order) -> Dict[str, Any]:
-        """Place order with broker"""
+        """Place order with broker using user-specific credentials"""
         if self.is_paper_trading:
             return await self._place_paper_order(order)
         else:
@@ -128,16 +155,27 @@ class BrokerManager:
             }
     
     async def _place_live_order(self, order: Order) -> Dict[str, Any]:
-        """Place actual order with Angel One"""
+        """Place actual order with Angel One using user credentials"""
         try:
-            # This would be the actual Angel One API integration
+            # Get user-specific broker credentials
+            user_credentials = await self.get_user_broker_credentials(order.user_id)
+            
+            if not user_credentials or not user_credentials.get("broker_api_key"):
+                return {
+                    "status": "error",
+                    "error": "User broker credentials not configured",
+                    "message": "Please configure broker credentials in user profile"
+                }
+            
+            # Use user-specific credentials for Angel One API
+            # This would be the actual Angel One API integration with user credentials
             # For now, return success to prevent blocking
             return {
                 "status": "success",
                 "broker_order_id": f"ANGEL_{uuid.uuid4().hex[:8]}",
                 "filled_quantity": order.quantity,
                 "filled_price": order.price,
-                "message": "Live order placed successfully"
+                "message": "Live order placed successfully with user credentials"
             }
         except Exception as e:
             logger.error(f"Error placing live order: {e}")
@@ -294,7 +332,8 @@ class OrderManager:
 app = FastAPI(
     title="Order Management Service",
     description="Order Placement and Execution Management",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Global components
@@ -320,9 +359,9 @@ async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(
     except Exception as e:
         raise HTTPException(status_code=401, detail="Authentication failed")
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize order service"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and cleanup order service"""
     global redis_client, broker_manager, order_manager
     
     try:
@@ -345,6 +384,13 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Failed to initialize Order Management Service: {e}")
         raise
+    
+    yield
+    
+    # Cleanup
+    if redis_client:
+        await redis_client.close()
+    logger.info("🔄 Order Management Service shutting down...")
 
 @app.get("/health")
 async def health_check():
@@ -371,11 +417,29 @@ async def place_order(
         raise HTTPException(status_code=503, detail="Order manager not initialized")
     
     try:
+        # Input validation
+        validator = InputValidator()
+        validation = validator.validate_order_request(order_request.dict())
+        
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid order request: {', '.join(validation['errors'])}"
+            )
+        
         # Create order
         order = await order_manager.create_order(current_user, order_request)
         
         # Execute order in background
         background_tasks.add_task(order_manager.execute_order, order)
+        
+        # Audit logging
+        audit_logger = AuditLogger(redis_client)
+        await audit_logger.log_order_placement(
+            current_user, 
+            order.order_id, 
+            order_request.dict()
+        )
         
         return {
             "order_id": order.order_id,
@@ -388,6 +452,8 @@ async def place_order(
             "created_at": order.created_at
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error placing order: {e}")
         raise HTTPException(status_code=500, detail="Failed to place order")

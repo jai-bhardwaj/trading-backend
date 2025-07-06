@@ -16,6 +16,10 @@ import httpx
 import os
 from dataclasses import dataclass
 from enum import Enum
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from shared.common.performance import monitor_performance, CacheManager
+from shared.common.monitoring import MetricsCollector
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -284,16 +288,19 @@ class MarketDataEngine:
 app = FastAPI(
     title="Market Data Service",
     description="Real-time Market Data with Caching",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Global components
 redis_client = None
 market_engine = None
+cache_manager = None
+metrics_collector = None
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize market data service"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and cleanup market data service"""
     global redis_client, market_engine
     
     try:
@@ -311,19 +318,24 @@ async def startup_event():
         # Start real-time updates
         await market_engine.start_real_time_updates()
         
+        # Initialize performance components
+        cache_manager = CacheManager(redis_client)
+        metrics_collector = MetricsCollector(redis_client)
+        
         logger.info("✅ Market Data Service ready on port 8002")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize Market Data Service: {e}")
         raise
-
-@app.on_event("shutdown") 
-async def shutdown_event():
-    """Cleanup on shutdown"""
+    
+    yield
+    
+    # Cleanup
     if market_engine:
         await market_engine.stop_real_time_updates()
     if redis_client:
         await redis_client.close()
+    logger.info("🔄 Market Data Service shutting down...")
 
 @app.get("/health")
 async def health_check():
@@ -340,15 +352,28 @@ async def health_check():
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {e}")
 
 @app.get("/realtime/{symbol}")
+@monitor_performance("get_realtime_data")
 async def get_realtime_data(symbol: str):
     """Get real-time data for a symbol"""
     if not market_engine:
         raise HTTPException(status_code=503, detail="Market engine not initialized")
     
     try:
-        data = await market_engine.get_symbol_data(symbol.upper())
+        # Use cache manager for better performance
+        async def fetch_data():
+            return await market_engine.get_symbol_data(symbol.upper())
+        
+        data = await cache_manager.get_or_set(
+            f"market_data:{symbol}",
+            fetch_data,
+            ttl=1  # 1 second cache for real-time data
+        )
+        
         if not data:
             raise HTTPException(status_code=404, detail=f"No data available for {symbol}")
+        
+        # Record metrics
+        await metrics_collector.record_metric("market_data_requests", 1, {"symbol": symbol})
         
         return {
             "symbol": symbol.upper(),

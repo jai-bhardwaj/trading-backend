@@ -1,165 +1,482 @@
 #!/usr/bin/env python3
 """
-Strategy Engine Service - Handles strategy execution and marketplace
-Isolated service for strategy management and execution
+Advanced Strategy Engine - Multi-strategy trading with backtesting
 """
 
 import asyncio
 import logging
 import json
 import time
-from datetime import datetime
-from typing import Dict, List, Optional, Any
+import math
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Callable
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import redis.asyncio as redis
 import httpx
 import os
+import numpy as np
 from dataclasses import dataclass, field
 from enum import Enum
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from shared.common.error_handling import with_circuit_breaker, with_retry
+from shared.common.security import AuditLogger
+from shared.common.monitoring import MetricsCollector
+from contextlib import asynccontextmanager
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
+class StrategyType(Enum):
+    MOVING_AVERAGE = "MOVING_AVERAGE"
+    RSI = "RSI"
+    MACD = "MACD"
+    BOLLINGER_BANDS = "BOLLINGER_BANDS"
+    MEAN_REVERSION = "MEAN_REVERSION"
+    MOMENTUM = "MOMENTUM"
+    ARBITRAGE = "ARBITRAGE"
+    PAIRS_TRADING = "PAIRS_TRADING"
+
+class SignalType(Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+
 @dataclass
-class StrategyServiceConfig:
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/3")
-    USER_SERVICE_URL: str = "http://localhost:8001"
-    MARKET_DATA_SERVICE_URL: str = "http://localhost:8002"
-    ORDER_SERVICE_URL: str = "http://localhost:8004"
-    EXECUTION_INTERVAL: float = 1.0  # Execute strategies every second
-
-config = StrategyServiceConfig()
-
-class StrategyStatus(Enum):
-    AVAILABLE = "available"
-    ACTIVE = "active"
-    PAUSED = "paused"
-
-@dataclass
-class StrategyTemplate:
+class TradingSignal:
+    """Trading signal from strategy"""
     strategy_id: str
-    name: str
-    description: str
-    category: str
-    risk_level: str
-    min_capital: float
-    expected_return_annual: float
-    max_drawdown: float
+    symbol: str
+    signal_type: SignalType
+    confidence: float  # 0.0 to 1.0
+    price: float
+    quantity: int
+    timestamp: datetime
+    metadata: Dict = field(default_factory=dict)
+
+@dataclass
+class StrategyConfig:
+    """Strategy configuration"""
+    strategy_id: str
+    strategy_type: StrategyType
     symbols: List[str]
     parameters: Dict[str, Any]
-    is_active: bool = True
+    enabled: bool = True
+    risk_level: str = "MEDIUM"
+    max_position_size: float = 100000.0
+    stop_loss_percent: float = 0.05
+    take_profit_percent: float = 0.10
 
 @dataclass
-class UserStrategy:
-    user_id: str
+class BacktestResult:
+    """Backtest result"""
     strategy_id: str
-    status: StrategyStatus
-    activated_at: str
-    allocation_amount: float = 0.0
-    custom_parameters: Dict[str, Any] = field(default_factory=dict)
-    total_orders: int = 0
-    successful_orders: int = 0
-    total_pnl: float = 0.0
+    total_return: float
+    sharpe_ratio: float
+    max_drawdown: float
+    win_rate: float
+    total_trades: int
+    profit_factor: float
+    start_date: datetime
+    end_date: datetime
+    trades: List[Dict]
 
-class BaseStrategy:
-    """Base class for all trading strategies"""
+class StrategyEngine:
+    """Advanced strategy engine with multiple strategies"""
     
-    def __init__(self, strategy_id: str, config: Dict[str, Any]):
-        self.strategy_id = strategy_id
-        self.config = config
-        self.symbols = config.get("symbols", [])
-        self.last_execution = 0
-        self.execution_count = 0
+    def __init__(self, redis_client: redis.Redis):
+        self.redis_client = redis_client
+        self.strategies = {}
+        self.active_signals = {}
+        self.metrics_collector = MetricsCollector(redis_client)
+        self.audit_logger = AuditLogger(redis_client)
         
-    async def should_execute(self, market_data: Dict[str, Any]) -> bool:
-        """Check if strategy should execute based on market conditions"""
-        # Base implementation - execute every minute
-        return time.time() - self.last_execution > 60
+        # Register strategy implementations
+        self.strategy_implementations = {
+            StrategyType.MOVING_AVERAGE: self._moving_average_strategy,
+            StrategyType.RSI: self._rsi_strategy,
+            StrategyType.MACD: self._macd_strategy,
+            StrategyType.BOLLINGER_BANDS: self._bollinger_bands_strategy,
+            StrategyType.MEAN_REVERSION: self._mean_reversion_strategy,
+            StrategyType.MOMENTUM: self._momentum_strategy
+        }
     
-    async def execute(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Execute strategy logic - to be implemented by subclasses"""
-        raise NotImplementedError
+    async def initialize(self):
+        """Initialize strategy engine"""
+        # Load default strategies
+        await self._load_default_strategies()
+        logger.info("✅ Strategy Engine initialized")
     
-    async def post_execute(self, signal: Optional[Dict[str, Any]]):
-        """Post-execution cleanup"""
-        self.last_execution = time.time()
-        self.execution_count += 1
-
-class RSIDMIStrategy(BaseStrategy):
-    """RSI + DMI strategy implementation"""
-    
-    def __init__(self, strategy_id: str, config: Dict[str, Any]):
-        super().__init__(strategy_id, config)
-        self.price_history = {}
+    async def _load_default_strategies(self):
+        """Load default trading strategies"""
+        default_strategies = [
+            StrategyConfig(
+                strategy_id="ma_crossover",
+                strategy_type=StrategyType.MOVING_AVERAGE,
+                symbols=["RELIANCE", "TCS", "INFY"],
+                parameters={
+                    "short_window": 10,
+                    "long_window": 50,
+                    "min_confidence": 0.7
+                }
+            ),
+            StrategyConfig(
+                strategy_id="rsi_strategy",
+                strategy_type=StrategyType.RSI,
+                symbols=["RELIANCE", "TCS", "INFY", "HDFC"],
+                parameters={
+                    "period": 14,
+                    "oversold": 30,
+                    "overbought": 70,
+                    "min_confidence": 0.6
+                }
+            ),
+            StrategyConfig(
+                strategy_id="bollinger_bands",
+                strategy_type=StrategyType.BOLLINGER_BANDS,
+                symbols=["RELIANCE", "TCS", "INFY"],
+                parameters={
+                    "period": 20,
+                    "std_dev": 2,
+                    "min_confidence": 0.65
+                }
+            )
+        ]
         
-    async def execute(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Execute RSI + DMI strategy"""
-        signals = []
+        for strategy in default_strategies:
+            await self.add_strategy(strategy)
+    
+    async def add_strategy(self, config: StrategyConfig):
+        """Add a new trading strategy"""
+        key = f"strategy:{config.strategy_id}"
+        strategy_data = {
+            "strategy_id": config.strategy_id,
+            "strategy_type": config.strategy_type.value,
+            "symbols": config.symbols,
+            "parameters": config.parameters,
+            "enabled": config.enabled,
+            "risk_level": config.risk_level,
+            "max_position_size": config.max_position_size,
+            "stop_loss_percent": config.stop_loss_percent,
+            "take_profit_percent": config.take_profit_percent
+        }
         
-        for symbol in self.symbols:
-            symbol_data = market_data.get(symbol, {})
-            if not symbol_data:
-                continue
-                
-            current_price = symbol_data.get("ltp", 0)
-            if current_price <= 0:
-                continue
-                
-            # Store price history
-            if symbol not in self.price_history:
-                self.price_history[symbol] = []
+        await self.redis_client.setex(
+            key,
+            86400 * 30,  # 30 days
+            json.dumps(strategy_data)
+        )
+        
+        self.strategies[config.strategy_id] = config
+        logger.info(f"✅ Added strategy: {config.strategy_id}")
+    
+    async def run_strategy(self, strategy_id: str, market_data: Dict) -> List[TradingSignal]:
+        """Run a specific strategy and generate signals"""
+        try:
+            if strategy_id not in self.strategies:
+                raise ValueError(f"Strategy {strategy_id} not found")
             
-            self.price_history[symbol].append({
-                "price": current_price,
-                "timestamp": time.time()
-            })
+            config = self.strategies[strategy_id]
+            if not config.enabled:
+                return []
             
-            # Keep only last 14 periods for RSI calculation
-            if len(self.price_history[symbol]) > 14:
-                self.price_history[symbol] = self.price_history[symbol][-14:]
+            strategy_func = self.strategy_implementations.get(config.strategy_type)
+            if not strategy_func:
+                logger.error(f"❌ Strategy implementation not found: {config.strategy_type}")
+                return []
             
-            # Calculate RSI (simplified)
-            rsi = self._calculate_rsi(symbol)
-            if rsi is None:
-                continue
-                
-            # Generate signals
-            if rsi > 70 and symbol_data.get("change_percent", 0) > 2:
-                signals.append({
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "BUY",
-                    "quantity": 10,
-                    "price": current_price,
-                    "reason": f"RSI oversold: {rsi:.2f}",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-            elif rsi < 30 and symbol_data.get("change_percent", 0) < -2:
-                signals.append({
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "SELL",
-                    "quantity": 10,
-                    "price": current_price,
-                    "reason": f"RSI overbought: {rsi:.2f}",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-        
-        return {"signals": signals} if signals else None
+            signals = []
+            for symbol in config.symbols:
+                if symbol in market_data:
+                    signal = await strategy_func(symbol, market_data[symbol], config.parameters)
+                    if signal:
+                        signals.append(signal)
+            
+            # Record metrics
+            await self.metrics_collector.record_metric(
+                "strategy_signals",
+                len(signals),
+                {"strategy_id": strategy_id, "symbols": config.symbols}
+            )
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"❌ Strategy execution error: {e}")
+            return []
     
-    def _calculate_rsi(self, symbol: str) -> Optional[float]:
-        """Calculate RSI for symbol"""
-        prices = self.price_history.get(symbol, [])
-        if len(prices) < 14:
+    async def run_all_strategies(self, market_data: Dict) -> List[TradingSignal]:
+        """Run all active strategies"""
+        all_signals = []
+        
+        for strategy_id in self.strategies:
+            signals = await self.run_strategy(strategy_id, market_data)
+            all_signals.extend(signals)
+        
+        return all_signals
+    
+    async def _moving_average_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """Moving average crossover strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < params["long_window"]:
+                return None
+            
+            # Calculate moving averages
+            short_ma = np.mean(prices[-params["short_window"]:])
+            long_ma = np.mean(prices[-params["long_window"]:])
+            
+            current_price = prices[-1]
+            prev_short_ma = np.mean(prices[-params["short_window"]-1:-1])
+            prev_long_ma = np.mean(prices[-params["long_window"]-1:-1])
+            
+            # Generate signal
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if short_ma > long_ma and prev_short_ma <= prev_long_ma:
+                signal_type = SignalType.BUY
+                confidence = min(0.9, abs(short_ma - long_ma) / current_price)
+            elif short_ma < long_ma and prev_short_ma >= prev_long_ma:
+                signal_type = SignalType.SELL
+                confidence = min(0.9, abs(short_ma - long_ma) / current_price)
+            
+            if confidence >= params.get("min_confidence", 0.7):
+                return TradingSignal(
+                    strategy_id="ma_crossover",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"short_ma": short_ma, "long_ma": long_ma}
+                )
+            
             return None
             
-        gains, losses = [], []
+        except Exception as e:
+            logger.error(f"❌ MA strategy error: {e}")
+            return None
+    
+    async def _rsi_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """RSI strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < params["period"]:
+                return None
+            
+            # Calculate RSI
+            rsi = self._calculate_rsi(prices, params["period"])
+            
+            current_price = prices[-1]
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if rsi < params["oversold"]:
+                signal_type = SignalType.BUY
+                confidence = (params["oversold"] - rsi) / params["oversold"]
+            elif rsi > params["overbought"]:
+                signal_type = SignalType.SELL
+                confidence = (rsi - params["overbought"]) / (100 - params["overbought"])
+            
+            if confidence >= params.get("min_confidence", 0.6):
+                return TradingSignal(
+                    strategy_id="rsi_strategy",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"rsi": rsi}
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ RSI strategy error: {e}")
+            return None
+    
+    async def _macd_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """MACD strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < 26:
+                return None
+            
+            # Calculate MACD
+            ema12 = self._calculate_ema(prices, 12)
+            ema26 = self._calculate_ema(prices, 26)
+            macd_line = ema12 - ema26
+            signal_line = self._calculate_ema([macd_line], 9)
+            histogram = macd_line - signal_line
+            
+            current_price = prices[-1]
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if histogram > 0 and histogram > params.get("min_histogram", 0):
+                signal_type = SignalType.BUY
+                confidence = min(0.8, abs(histogram) / current_price)
+            elif histogram < 0 and abs(histogram) > params.get("min_histogram", 0):
+                signal_type = SignalType.SELL
+                confidence = min(0.8, abs(histogram) / current_price)
+            
+            if confidence >= params.get("min_confidence", 0.6):
+                return TradingSignal(
+                    strategy_id="macd_strategy",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"macd": macd_line, "signal": signal_line, "histogram": histogram}
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ MACD strategy error: {e}")
+            return None
+    
+    async def _bollinger_bands_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """Bollinger Bands strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < params["period"]:
+                return None
+            
+            # Calculate Bollinger Bands
+            sma = np.mean(prices[-params["period"]:])
+            std = np.std(prices[-params["period"]:])
+            upper_band = sma + (params["std_dev"] * std)
+            lower_band = sma - (params["std_dev"] * std)
+            
+            current_price = prices[-1]
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if current_price <= lower_band:
+                signal_type = SignalType.BUY
+                confidence = (lower_band - current_price) / lower_band
+            elif current_price >= upper_band:
+                signal_type = SignalType.SELL
+                confidence = (current_price - upper_band) / upper_band
+            
+            if confidence >= params.get("min_confidence", 0.65):
+                return TradingSignal(
+                    strategy_id="bollinger_bands",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"upper_band": upper_band, "lower_band": lower_band, "sma": sma}
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Bollinger Bands strategy error: {e}")
+            return None
+    
+    async def _mean_reversion_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """Mean reversion strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < 20:
+                return None
+            
+            # Calculate mean and standard deviation
+            mean_price = np.mean(prices[-20:])
+            std_price = np.std(prices[-20:])
+            current_price = prices[-1]
+            
+            # Calculate z-score
+            z_score = (current_price - mean_price) / std_price
+            
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if z_score < -1.5:  # Oversold
+                signal_type = SignalType.BUY
+                confidence = min(0.8, abs(z_score) / 3)
+            elif z_score > 1.5:  # Overbought
+                signal_type = SignalType.SELL
+                confidence = min(0.8, abs(z_score) / 3)
+            
+            if confidence >= params.get("min_confidence", 0.6):
+                return TradingSignal(
+                    strategy_id="mean_reversion",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"z_score": z_score, "mean": mean_price}
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Mean reversion strategy error: {e}")
+            return None
+    
+    async def _momentum_strategy(self, symbol: str, data: Dict, params: Dict) -> Optional[TradingSignal]:
+        """Momentum strategy"""
+        try:
+            prices = data.get("historical_prices", [])
+            if len(prices) < 10:
+                return None
+            
+            # Calculate momentum (rate of change)
+            current_price = prices[-1]
+            past_price = prices[-10]
+            momentum = (current_price - past_price) / past_price
+            
+            signal_type = SignalType.HOLD
+            confidence = 0.0
+            
+            if momentum > 0.05:  # 5% positive momentum
+                signal_type = SignalType.BUY
+                confidence = min(0.8, momentum / 0.2)
+            elif momentum < -0.05:  # 5% negative momentum
+                signal_type = SignalType.SELL
+                confidence = min(0.8, abs(momentum) / 0.2)
+            
+            if confidence >= params.get("min_confidence", 0.6):
+                return TradingSignal(
+                    strategy_id="momentum",
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    confidence=confidence,
+                    price=current_price,
+                    quantity=self._calculate_position_size(current_price, confidence),
+                    timestamp=datetime.utcnow(),
+                    metadata={"momentum": momentum}
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Momentum strategy error: {e}")
+            return None
+    
+    def _calculate_rsi(self, prices: List[float], period: int) -> float:
+        """Calculate RSI"""
+        if len(prices) < period + 1:
+            return 50.0
+        
+        gains = []
+        losses = []
+        
         for i in range(1, len(prices)):
-            change = prices[i]["price"] - prices[i-1]["price"]
+            change = prices[i] - prices[i-1]
             if change > 0:
                 gains.append(change)
                 losses.append(0)
@@ -167,252 +484,177 @@ class RSIDMIStrategy(BaseStrategy):
                 gains.append(0)
                 losses.append(abs(change))
         
-        if not gains or not losses:
-            return None
-            
-        avg_gain = sum(gains) / len(gains)
-        avg_loss = sum(losses) / len(losses)
+        avg_gain = np.mean(gains[-period:])
+        avg_loss = np.mean(losses[-period:])
         
         if avg_loss == 0:
-            return 100
-            
+            return 100.0
+        
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
+        
         return rsi
-
-class SwingMomentumStrategy(BaseStrategy):
-    """Swing momentum strategy"""
     
-    async def execute(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Execute swing momentum strategy"""
-        signals = []
+    def _calculate_ema(self, prices: List[float], period: int) -> float:
+        """Calculate Exponential Moving Average"""
+        if len(prices) < period:
+            return prices[-1]
         
-        for symbol in self.symbols:
-            symbol_data = market_data.get(symbol, {})
-            if not symbol_data:
-                continue
-                
-            change_percent = symbol_data.get("change_percent", 0)
-            volume = symbol_data.get("volume", 0)
-            current_price = symbol_data.get("ltp", 0)
-            
-            # Momentum signals
-            if change_percent > 4 and volume > 1000000:
-                signals.append({
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "BUY",
-                    "quantity": 5,
-                    "price": current_price,
-                    "reason": f"Strong momentum: {change_percent:.2f}%",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
+        alpha = 2 / (period + 1)
+        ema = prices[0]
         
-        return {"signals": signals} if signals else None
-
-class BTSTMomentumStrategy(BaseStrategy):
-    """Buy Today Sell Tomorrow momentum strategy"""
+        for price in prices[1:]:
+            ema = alpha * price + (1 - alpha) * ema
+        
+        return ema
     
-    async def execute(self, market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Execute BTST strategy"""
-        signals = []
-        current_hour = datetime.now().hour
-        
-        # Only execute in last 2 hours of trading (2-4 PM)
-        if current_hour < 14 or current_hour > 16:
-            return None
-            
-        for symbol in self.symbols:
-            symbol_data = market_data.get(symbol, {})
-            if not symbol_data:
-                continue
-                
-            change_percent = symbol_data.get("change_percent", 0)
-            volume = symbol_data.get("volume", 0)
-            current_price = symbol_data.get("ltp", 0)
-            
-            # Late day momentum
-            if change_percent > 3 and volume > 2000000:
-                signals.append({
-                    "strategy_id": self.strategy_id,
-                    "symbol": symbol,
-                    "action": "BUY",
-                    "quantity": 8,
-                    "price": current_price,
-                    "reason": f"BTST momentum: {change_percent:.2f}%",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-        
-        return {"signals": signals} if signals else None
-
-class StrategyMarketplace:
-    """Manages available strategies and user activations"""
+    def _calculate_position_size(self, price: float, confidence: float) -> int:
+        """Calculate position size based on confidence"""
+        base_size = 100  # Base position size
+        confidence_multiplier = 1 + confidence  # 1.0 to 2.0
+        return int(base_size * confidence_multiplier)
     
-    def __init__(self, redis_client):
-        self.redis_client = redis_client
-        self.available_strategies = {}
-        self.user_strategies = {}
-        self.strategy_instances = {}
-        
-    async def initialize(self):
-        """Initialize marketplace with default strategies"""
-        self.available_strategies = {
-            "rsi_dmi": StrategyTemplate(
-                strategy_id="rsi_dmi",
-                name="RSI DMI Strategy",
-                description="Entry: RSI > 70 + DMI confirmation | Exit: RSI < 30",
-                category="Technical",
-                risk_level="Medium",
-                min_capital=50000.0,
-                expected_return_annual=15.0,
-                max_drawdown=8.0,
-                symbols=["RELIANCE", "TCS", "INFY", "HDFC", "ICICIBANK"],
-                parameters={"rsi_period": 14, "rsi_oversold": 30, "rsi_overbought": 70}
-            ),
-            "swing_momentum": StrategyTemplate(
-                strategy_id="swing_momentum",
-                name="Swing Momentum 4%",
-                description="Entry: 4% momentum + bullish signals | Exit: 2 days or stop loss",
-                category="Momentum",
-                risk_level="High",
-                min_capital=100000.0,
-                expected_return_annual=25.0,
-                max_drawdown=12.0,
-                symbols=["RELIANCE", "TCS", "INFY", "HDFC", "ICICIBANK", "WIPRO"],
-                parameters={"momentum_threshold": 4.0, "volume_threshold": 1000000}
-            ),
-            "btst_momentum": StrategyTemplate(
-                strategy_id="btst_momentum",
-                name="BTST Momentum",
-                description="Entry: Late day momentum + volume | Exit: Next day morning",
-                category="Intraday",
-                risk_level="High",
-                min_capital=200000.0,
-                expected_return_annual=30.0,
-                max_drawdown=15.0,
-                symbols=["RELIANCE", "TCS", "INFY"],
-                parameters={"late_day_threshold": 3.0, "volume_threshold": 2000000}
+    async def backtest_strategy(self, strategy_id: str, historical_data: Dict, 
+                               start_date: datetime, end_date: datetime) -> BacktestResult:
+        """Backtest a strategy"""
+        try:
+            if strategy_id not in self.strategies:
+                raise ValueError(f"Strategy {strategy_id} not found")
+            
+            config = self.strategies[strategy_id]
+            trades = []
+            portfolio_value = 100000  # Starting capital
+            max_portfolio_value = portfolio_value
+            max_drawdown = 0
+            
+            # Simulate trading
+            for date in self._date_range(start_date, end_date):
+                if date.strftime("%Y-%m-%d") in historical_data:
+                    day_data = historical_data[date.strftime("%Y-%m-%d")]
+                    
+                    # Run strategy for this day
+                    signals = await self.run_strategy(strategy_id, day_data)
+                    
+                    for signal in signals:
+                        if signal.signal_type in [SignalType.BUY, SignalType.SELL]:
+                            # Execute trade
+                            trade_value = signal.price * signal.quantity
+                            
+                            if signal.signal_type == SignalType.BUY:
+                                portfolio_value -= trade_value
+                            else:  # SELL
+                                portfolio_value += trade_value
+                            
+                            trades.append({
+                                "date": date.isoformat(),
+                                "symbol": signal.symbol,
+                                "action": signal.signal_type.value,
+                                "price": signal.price,
+                                "quantity": signal.quantity,
+                                "value": trade_value,
+                                "portfolio_value": portfolio_value
+                            })
+                            
+                            # Update max portfolio value and drawdown
+                            if portfolio_value > max_portfolio_value:
+                                max_portfolio_value = portfolio_value
+                            
+                            current_drawdown = (max_portfolio_value - portfolio_value) / max_portfolio_value
+                            if current_drawdown > max_drawdown:
+                                max_drawdown = current_drawdown
+            
+            # Calculate metrics
+            total_return = (portfolio_value - 100000) / 100000
+            total_trades = len(trades)
+            winning_trades = len([t for t in trades if t["value"] > 0])
+            win_rate = winning_trades / total_trades if total_trades > 0 else 0
+            
+            # Calculate Sharpe ratio (simplified)
+            returns = []
+            for i in range(1, len(trades)):
+                returns.append((trades[i]["portfolio_value"] - trades[i-1]["portfolio_value"]) / trades[i-1]["portfolio_value"])
+            
+            sharpe_ratio = np.mean(returns) / np.std(returns) if returns and np.std(returns) > 0 else 0
+            
+            # Calculate profit factor
+            gross_profit = sum([t["value"] for t in trades if t["value"] > 0])
+            gross_loss = abs(sum([t["value"] for t in trades if t["value"] < 0]))
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+            
+            return BacktestResult(
+                strategy_id=strategy_id,
+                total_return=total_return,
+                sharpe_ratio=sharpe_ratio,
+                max_drawdown=max_drawdown,
+                win_rate=win_rate,
+                total_trades=total_trades,
+                profit_factor=profit_factor,
+                start_date=start_date,
+                end_date=end_date,
+                trades=trades
             )
-        }
-        
-        # Create strategy instances
-        for strategy_id, template in self.available_strategies.items():
-            if strategy_id == "rsi_dmi":
-                self.strategy_instances[strategy_id] = RSIDMIStrategy(strategy_id, template.parameters)
-            elif strategy_id == "swing_momentum":
-                self.strategy_instances[strategy_id] = SwingMomentumStrategy(strategy_id, template.parameters)
-            elif strategy_id == "btst_momentum":
-                self.strategy_instances[strategy_id] = BTSTMomentumStrategy(strategy_id, template.parameters)
-        
-        logger.info(f"✅ Initialized {len(self.available_strategies)} strategies")
-    
-    async def activate_user_strategy(self, user_id: str, strategy_id: str, allocation: float = 0.0) -> bool:
-        """Activate strategy for user"""
-        if strategy_id not in self.available_strategies:
-            return False
             
-        user_strategy = UserStrategy(
-            user_id=user_id,
-            strategy_id=strategy_id,
-            status=StrategyStatus.ACTIVE,
-            activated_at=datetime.utcnow().isoformat(),
-            allocation_amount=allocation
-        )
-        
-        if user_id not in self.user_strategies:
-            self.user_strategies[user_id] = {}
-        
-        self.user_strategies[user_id][strategy_id] = user_strategy
-        
-        # Cache in Redis
-        await self.redis_client.setex(
-            f"user_strategy:{user_id}:{strategy_id}",
-            86400,  # 24 hours
-            json.dumps(user_strategy.__dict__)
-        )
-        
-        logger.info(f"✅ Activated strategy {strategy_id} for user {user_id}")
-        return True
+        except Exception as e:
+            logger.error(f"❌ Backtest error: {e}")
+            raise
     
-    async def deactivate_user_strategy(self, user_id: str, strategy_id: str) -> bool:
-        """Deactivate strategy for user"""
-        if user_id in self.user_strategies and strategy_id in self.user_strategies[user_id]:
-            self.user_strategies[user_id][strategy_id].status = StrategyStatus.PAUSED
-            
-            # Update in Redis
-            await self.redis_client.delete(f"user_strategy:{user_id}:{strategy_id}")
-            
-            logger.info(f"🛑 Deactivated strategy {strategy_id} for user {user_id}")
-            return True
-        
-        return False
-    
-    def get_marketplace_data(self) -> List[Dict]:
-        """Get all available strategies for marketplace"""
-        return [strategy.__dict__ for strategy in self.available_strategies.values()]
-    
-    def get_user_active_strategies(self, user_id: str) -> List[Dict]:
-        """Get user's active strategies"""
-        if user_id not in self.user_strategies:
-            return []
-        
-        return [
-            {**strategy.__dict__, **self.available_strategies[strategy.strategy_id].__dict__}
-            for strategy in self.user_strategies[user_id].values()
-            if strategy.status == StrategyStatus.ACTIVE
-        ]
-    
-    async def execute_user_strategies(self, user_id: str, market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Execute all active strategies for a user"""
-        if user_id not in self.user_strategies:
-            return []
-        
-        all_signals = []
-        
-        for strategy_id, user_strategy in self.user_strategies[user_id].items():
-            if user_strategy.status != StrategyStatus.ACTIVE:
-                continue
-                
-            strategy_instance = self.strategy_instances.get(strategy_id)
-            if not strategy_instance:
-                continue
-            
-            try:
-                if await strategy_instance.should_execute(market_data):
-                    result = await strategy_instance.execute(market_data)
-                    if result and result.get("signals"):
-                        # Add user context to signals
-                        for signal in result["signals"]:
-                            signal["user_id"] = user_id
-                            signal["allocation_amount"] = user_strategy.allocation_amount
-                        all_signals.extend(result["signals"])
-                    
-                    await strategy_instance.post_execute(result)
-                    
-            except Exception as e:
-                logger.error(f"Error executing strategy {strategy_id} for user {user_id}: {e}")
-        
-        return all_signals
+    def _date_range(self, start_date: datetime, end_date: datetime):
+        """Generate date range"""
+        current_date = start_date
+        while current_date <= end_date:
+            yield current_date
+            current_date += timedelta(days=1)
 
-# Initialize FastAPI app
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan events for the application"""
+    # Startup
+    global redis_client, strategy_engine
+    
+    try:
+        logger.info("🚀 Strategy Engine starting up...")
+        
+        # Connect to Redis
+        redis_client = redis.from_url("redis://localhost:6379/7")
+        await redis_client.ping()
+        logger.info("✅ Redis connected")
+        
+        # Initialize strategy engine
+        strategy_engine = StrategyEngine(redis_client)
+        await strategy_engine.initialize()
+        
+        logger.info("✅ Strategy Engine ready on port 8007")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Strategy Engine: {e}")
+        raise
+    
+    yield
+    
+    # Shutdown
+    if redis_client:
+        await redis_client.close()
+        logger.info("✅ Strategy Engine shutdown complete")
+
+# FastAPI app
 app = FastAPI(
-    title="Strategy Engine Service",
-    description="Strategy Execution and Marketplace Management",
-    version="1.0.0"
+    title="Strategy Engine",
+    description="Advanced Trading Strategy Engine",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Global components
 redis_client = None
-marketplace = None
+strategy_engine = None
 security = HTTPBearer()
 
-# Authentication helper
 async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """Verify user token with user service"""
+    """Verify user token"""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{config.USER_SERVICE_URL}/dashboard",
+                "http://localhost:8001/dashboard",
                 headers={"Authorization": f"Bearer {credentials.credentials}"}
             )
             if response.status_code == 200:
@@ -423,29 +665,6 @@ async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(
     except Exception as e:
         raise HTTPException(status_code=401, detail="Authentication failed")
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize strategy service"""
-    global redis_client, marketplace
-    
-    try:
-        logger.info("🚀 Strategy Engine Service starting up...")
-        
-        # Connect to Redis
-        redis_client = redis.from_url(config.REDIS_URL)
-        await redis_client.ping()
-        logger.info("✅ Redis connected")
-        
-        # Initialize marketplace
-        marketplace = StrategyMarketplace(redis_client)
-        await marketplace.initialize()
-        
-        logger.info("✅ Strategy Engine Service ready on port 8003")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Strategy Engine Service: {e}")
-        raise
-
 @app.get("/health")
 async def health_check():
     """Service health check"""
@@ -454,112 +673,165 @@ async def health_check():
         return {
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "available_strategies": len(marketplace.available_strategies) if marketplace else 0
+            "active_strategies": len(strategy_engine.strategies) if strategy_engine else 0
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {e}")
 
-@app.get("/marketplace")
-async def get_marketplace():
-    """Get all available strategies"""
-    if not marketplace:
-        raise HTTPException(status_code=503, detail="Strategy marketplace not initialized")
-    
-    strategies = marketplace.get_marketplace_data()
-    return {
-        "strategies": strategies,
-        "total_strategies": len(strategies),
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-@app.post("/user/activate/{strategy_id}")
-async def activate_strategy(
+@app.post("/run-strategy")
+async def run_strategy(
     strategy_id: str,
-    allocation_data: Dict[str, Any] = {},
+    market_data: Dict,
     current_user: str = Depends(verify_user_token)
 ):
-    """Activate strategy for user"""
-    if not marketplace:
-        raise HTTPException(status_code=503, detail="Strategy marketplace not initialized")
+    """Run a specific strategy"""
+    if not strategy_engine:
+        raise HTTPException(status_code=503, detail="Strategy engine not initialized")
     
-    allocation_amount = allocation_data.get("allocation_amount", 0.0)
-    
-    success = await marketplace.activate_user_strategy(current_user, strategy_id, allocation_amount)
-    if success:
+    try:
+        signals = await strategy_engine.run_strategy(strategy_id, market_data)
         return {
-            "message": f"Strategy {strategy_id} activated successfully",
-            "user_id": current_user,
             "strategy_id": strategy_id,
-            "allocation_amount": allocation_amount
+            "signals": [
+                {
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type.value,
+                    "confidence": signal.confidence,
+                    "price": signal.price,
+                    "quantity": signal.quantity,
+                    "timestamp": signal.timestamp.isoformat(),
+                    "metadata": signal.metadata
+                }
+                for signal in signals
+            ]
         }
-    else:
-        raise HTTPException(status_code=400, detail="Failed to activate strategy")
+        
+    except Exception as e:
+        logger.error(f"Error running strategy: {e}")
+        raise HTTPException(status_code=500, detail="Failed to run strategy")
 
-@app.post("/user/deactivate/{strategy_id}")
-async def deactivate_strategy(
-    strategy_id: str,
+@app.post("/run-all-strategies")
+async def run_all_strategies(
+    market_data: Dict,
     current_user: str = Depends(verify_user_token)
 ):
-    """Deactivate strategy for user"""
-    if not marketplace:
-        raise HTTPException(status_code=503, detail="Strategy marketplace not initialized")
+    """Run all active strategies"""
+    if not strategy_engine:
+        raise HTTPException(status_code=503, detail="Strategy engine not initialized")
     
-    success = await marketplace.deactivate_user_strategy(current_user, strategy_id)
-    if success:
+    try:
+        signals = await strategy_engine.run_all_strategies(market_data)
         return {
-            "message": f"Strategy {strategy_id} deactivated successfully",
-            "user_id": current_user,
-            "strategy_id": strategy_id
+            "total_signals": len(signals),
+            "signals": [
+                {
+                    "strategy_id": signal.strategy_id,
+                    "symbol": signal.symbol,
+                    "signal_type": signal.signal_type.value,
+                    "confidence": signal.confidence,
+                    "price": signal.price,
+                    "quantity": signal.quantity,
+                    "timestamp": signal.timestamp.isoformat(),
+                    "metadata": signal.metadata
+                }
+                for signal in signals
+            ]
         }
-    else:
-        raise HTTPException(status_code=400, detail="Failed to deactivate strategy")
+        
+    except Exception as e:
+        logger.error(f"Error running all strategies: {e}")
+        raise HTTPException(status_code=500, detail="Failed to run strategies")
 
-@app.get("/user/strategies")
-async def get_user_strategies(current_user: str = Depends(verify_user_token)):
-    """Get user's active strategies"""
-    if not marketplace:
-        raise HTTPException(status_code=503, detail="Strategy marketplace not initialized")
+@app.post("/backtest")
+async def backtest_strategy(
+    strategy_id: str,
+    historical_data: Dict,
+    start_date: str,
+    end_date: str,
+    current_user: str = Depends(verify_user_token)
+):
+    """Backtest a strategy"""
+    if not strategy_engine:
+        raise HTTPException(status_code=503, detail="Strategy engine not initialized")
     
-    strategies = marketplace.get_user_active_strategies(current_user)
-    return {
-        "user_id": current_user,
-        "active_strategies": strategies,
-        "count": len(strategies),
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date)
+        
+        result = await strategy_engine.backtest_strategy(
+            strategy_id, historical_data, start_dt, end_dt
+        )
+        
+        return {
+            "strategy_id": result.strategy_id,
+            "total_return": result.total_return,
+            "sharpe_ratio": result.sharpe_ratio,
+            "max_drawdown": result.max_drawdown,
+            "win_rate": result.win_rate,
+            "total_trades": result.total_trades,
+            "profit_factor": result.profit_factor,
+            "start_date": result.start_date.isoformat(),
+            "end_date": result.end_date.isoformat(),
+            "trades": result.trades
+        }
+        
+    except Exception as e:
+        logger.error(f"Error backtesting strategy: {e}")
+        raise HTTPException(status_code=500, detail="Failed to backtest strategy")
 
-@app.post("/execute/{user_id}")
-async def execute_strategies_for_user(user_id: str, market_data: Dict[str, Any]):
-    """Execute strategies for a specific user (internal endpoint)"""
-    if not marketplace:
-        raise HTTPException(status_code=503, detail="Strategy marketplace not initialized")
+@app.post("/strategies")
+async def add_strategy(
+    strategy_config: Dict,
+    current_user: str = Depends(verify_user_token)
+):
+    """Add a new strategy"""
+    if not strategy_engine:
+        raise HTTPException(status_code=503, detail="Strategy engine not initialized")
     
-    signals = await marketplace.execute_user_strategies(user_id, market_data)
-    return {
-        "user_id": user_id,
-        "signals": signals,
-        "signal_count": len(signals),
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    try:
+        config = StrategyConfig(
+            strategy_id=strategy_config["strategy_id"],
+            strategy_type=StrategyType(strategy_config["strategy_type"]),
+            symbols=strategy_config["symbols"],
+            parameters=strategy_config["parameters"],
+            enabled=strategy_config.get("enabled", True),
+            risk_level=strategy_config.get("risk_level", "MEDIUM"),
+            max_position_size=strategy_config.get("max_position_size", 100000.0),
+            stop_loss_percent=strategy_config.get("stop_loss_percent", 0.05),
+            take_profit_percent=strategy_config.get("take_profit_percent", 0.10)
+        )
+        
+        await strategy_engine.add_strategy(config)
+        return {"message": "Strategy added successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error adding strategy: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add strategy")
 
-@app.get("/")
-async def service_info():
-    """Service information"""
-    return {
-        "service": "Strategy Engine Service",
-        "version": "1.0.0",
-        "status": "operational",
-        "available_strategies": len(marketplace.available_strategies) if marketplace else 0,
-        "endpoints": [
-            "GET /marketplace",
-            "POST /user/activate/{strategy_id}",
-            "POST /user/deactivate/{strategy_id}",
-            "GET /user/strategies",
-            "POST /execute/{user_id}",
-            "GET /health"
-        ]
-    }
+@app.get("/strategies")
+async def get_strategies(current_user: str = Depends(verify_user_token)):
+    """Get all strategies"""
+    if not strategy_engine:
+        raise HTTPException(status_code=503, detail="Strategy engine not initialized")
+    
+    try:
+        strategies = []
+        for strategy_id, config in strategy_engine.strategies.items():
+            strategies.append({
+                "strategy_id": config.strategy_id,
+                "strategy_type": config.strategy_type.value,
+                "symbols": config.symbols,
+                "parameters": config.parameters,
+                "enabled": config.enabled,
+                "risk_level": config.risk_level
+            })
+        
+        return {"strategies": strategies}
+        
+    except Exception as e:
+        logger.error(f"Error getting strategies: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get strategies")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8003) 
+    uvicorn.run(app, host="0.0.0.0", port=8007) 
