@@ -126,3 +126,8 @@ secrets/
 # Sensitive backup files
 .env.backup
 *.backup
+
+# Redis files
+dump.rdb
+*.rdb
+redis-dump.rdb
