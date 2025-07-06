@@ -62,6 +62,8 @@ pids
 # Coverage directory used by tools like istanbul
 coverage/
 *.lcov
+.coverage
+htmlcov/
 
 # nyc test coverage
 .nyc_output
@@ -131,3 +133,70 @@ secrets/
 dump.rdb
 *.rdb
 redis-dump.rdb
+
+# Testing and benchmarking
+.pytest_cache/
+.benchmarks/
+.tox/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Performance testing
+.benchmarks/
+performance_*.json
+benchmark_*.json
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Lock files
+*.lock
+
+# PID files
+*.pid
+
+# Cache directories
+.cache/
+cache/
