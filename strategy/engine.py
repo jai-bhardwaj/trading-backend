@@ -6,12 +6,14 @@ import asyncio
 import json
 import logging
 import redis.asyncio as redis
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import asdict
 from strategy.market_data import MarketDataProvider
 from strategy.registry import register_strategies_to_registry, get_strategy_class
 from shared.config import ConfigLoader
+from shared.market_hours import market_hours
 import threading
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ class StrategyEngine:
         self.live_market_data = {}  # token -> tick data
         self._market_data_lock = threading.Lock()
         self._ws_thread = None
+        self.strategy_stats = {}  # Track strategy performance
     
     async def initialize(self):
         try:
@@ -56,15 +59,19 @@ class StrategyEngine:
 
             # Start WebSocket for live market data
             all_tokens = self._collect_all_tokens()
-            logger.info(f"🚦 Starting WebSocket for tokens: {all_tokens}")
-            self._ws_thread = threading.Thread(target=self._start_ws_stream, args=(all_tokens,), daemon=True)
-            self._ws_thread.start()
+            if all_tokens:
+                logger.info(f"🚀 Starting WebSocket stream for {len(all_tokens)} tokens")
+                self._ws_thread = threading.Thread(target=self._start_ws_stream, args=(all_tokens,), daemon=True)
+                self._ws_thread.start()
+            else:
+                logger.warning("⚠️ No tokens to subscribe to - no strategies loaded or no symbols configured")
         except Exception as e:
             logger.error(f"❌ Failed to initialize strategy engine: {e}")
             raise
     
     async def _load_strategies_from_config(self):
         """Load strategies dynamically from configuration"""
+        loaded_count = 0
         for strategy_id, strategy_config in self.config_loader.strategies.items():
             if not strategy_config.enabled:
                 logger.info(f"⏭️ Skipping disabled strategy: {strategy_id}")
@@ -81,8 +88,17 @@ class StrategyEngine:
                 }
                 self.strategies[strategy_id] = strategy_cls(config_dict, self.market_data_provider)
                 logger.info(f"✅ Added strategy: {strategy_id} with {len(strategy_config.symbols)} symbols")
+                loaded_count += 1
             else:
-                logger.warning(f"⚠️ Strategy class not found for {strategy_id}")
+                logger.warning(f"⚠️ Strategy class not found for {strategy_id} - make sure it's registered in the registry")
+        
+        if loaded_count == 0:
+            logger.warning("⚠️ No strategies loaded from configuration. Please ensure:")
+            logger.warning("   1. Strategies exist in the database with valid configurations")
+            logger.warning("   2. All strategies are registered in the strategy registry")
+            logger.warning("   3. Strategy classes exist and are properly imported")
+        else:
+            logger.info(f"✅ Loaded {loaded_count} strategies from configuration")
     
     async def publish_signal(self, signal: Dict):
         try:
@@ -106,22 +122,55 @@ class StrategyEngine:
 
     def _start_ws_stream(self, tokens):
         def on_tick(tick):
-            # tick is a list of dicts
+            # tick is a list of dicts from WebSocket
             with self._market_data_lock:
                 for t in tick:
                     token = t.get("token")
                     if token:
-                        self.live_market_data[token] = t
+                        # Convert WebSocket data to MarketData format
+                        from strategy.market_data import MarketData
+                        from datetime import datetime
+                        
+                        market_data = MarketData(
+                            symbol=t.get("symbol", ""),
+                            ltp=float(t.get("last_traded_price", 0)) / 100,  # WebSocket price is in paise
+                            change=0.0,
+                            change_percent=0.0,
+                            high=float(t.get("high_price_of_the_day", 0)) / 100,
+                            low=float(t.get("low_price_of_the_day", 0)) / 100,
+                            volume=int(t.get("volume_trade_for_the_day", 0)),
+                            bid=0.0,
+                            ask=0.0,
+                            timestamp=datetime.now()
+                        )
+                        self.live_market_data[token] = market_data
+                        
+                        logger.debug(f"📈 WebSocket tick: {t.get('symbol', 'Unknown')} @ {market_data.ltp}")
         self.market_data_provider.start_websocket_stream(tokens, on_tick)
 
-    def _get_market_data_for_symbols(self, symbols):
-        """Return a dict: symbol -> latest market data (from live_market_data)"""
+    async def _get_market_data_for_symbols(self, symbols):
+        """Return a dict: symbol -> latest market data (WebSocket + LTP fallback)"""
         symbol_data = {}
+        
+        # First try to get data from WebSocket
         with self._market_data_lock:
             for symbol in symbols:
                 token = self.market_data_provider._get_symbol_token(symbol)
                 if token and token in self.live_market_data:
                     symbol_data[symbol] = self.live_market_data[token]
+        
+        # If WebSocket data is not available, check if market is open before getting LTP data
+        if not symbol_data:
+            market_status = market_hours.get_market_status()
+            if market_status["is_open"]:
+                try:
+                    logger.debug("📊 Market open but no WebSocket data - fetching LTP data for symbols...")
+                    symbol_data = await self.market_data_provider.get_ltp_data(symbols)
+                except Exception as e:
+                    logger.error(f"❌ Error getting LTP data: {e}")
+            else:
+                logger.debug("📊 Market closed - skipping LTP data fetch to reduce API calls")
+        
         return symbol_data
 
     async def run_strategy(self, strategy_id: str) -> List[Dict]:
@@ -132,7 +181,7 @@ class StrategyEngine:
             if not strategy.enabled:
                 return []
             # Pass live market data for this strategy's symbols
-            market_data = self._get_market_data_for_symbols(strategy.symbols)
+            market_data = await self._get_market_data_for_symbols(strategy.symbols)
             signals = await strategy.run(market_data)
             for signal in signals:
                 await self.publish_signal(signal)
@@ -143,17 +192,87 @@ class StrategyEngine:
     
     async def run_all_strategies(self) -> List[Dict]:
         all_signals = []
+        execution_time = datetime.now()
+        
         for strategy_id, strategy in self.strategies.items():
             signals = await self.run_strategy(strategy_id)
+            if signals:
+                # Track strategy performance
+                if strategy_id not in self.strategy_stats:
+                    self.strategy_stats[strategy_id] = {"signals_generated": 0, "last_signal": None}
+                self.strategy_stats[strategy_id]["signals_generated"] += len(signals)
+                self.strategy_stats[strategy_id]["last_signal"] = execution_time
+                
+                logger.info(f"📊 Strategy {strategy_id} generated {len(signals)} signals")
+                for signal in signals:
+                    logger.info(f"📊 Strategy {strategy_id}: {signal['symbol']} {signal['signal_type']} (confidence: {signal['confidence']:.2f})")
+            
             all_signals.extend(signals)
+        
+        if all_signals:
+            logger.info(f"📊 Strategy execution at {execution_time.strftime('%H:%M:%S')}: {len(all_signals)} signals generated")
+        else:
+            logger.debug(f"📊 Strategy execution at {execution_time.strftime('%H:%M:%S')}: No signals")
+        
         return all_signals
     
     async def start_continuous_execution(self, interval_seconds: int = 60):
         self.running = True
         logger.info(f"🚀 Starting continuous strategy execution (interval: {interval_seconds}s)")
+        
+        # For real-time execution, use more frequent logging
+        log_interval = 10 if interval_seconds <= 5 else 60
+        
+        execution_count = 0
+        market_closed_count = 0
+        last_market_status_log = None
+        
         while self.running:
             try:
+                # Check market hours first
+                market_status = market_hours.get_market_status()
+                current_time = market_status["current_time"]
+                
+                if not market_status["is_open"]:
+                    market_closed_count += 1
+                    
+                    # Log market closed status only once or every 10 minutes
+                    should_log = (
+                        market_closed_count == 1 or 
+                        market_closed_count % 60 == 0 or  # Log every 60 executions (10 minutes with 10s interval)
+                        (last_market_status_log and 
+                         (datetime.now() - last_market_status_log).seconds > 600)  # 10 minutes
+                    )
+                    
+                    if should_log:
+                        logger.info(f"📊 Market closed - {current_time} IST ({market_status['current_day']})")
+                        logger.info(f"📊 Market hours: {market_status['market_hours']}")
+                        if market_status['next_event_time']:
+                            logger.info(f"📊 {market_status['next_event']}: {market_status['next_event_time']}")
+                        logger.info(f"📊 Pausing strategy execution until market opens...")
+                        last_market_status_log = datetime.now()
+                    
+                    # Sleep longer when market is closed to reduce API calls
+                    # Use 5 minutes when market is closed instead of the normal interval
+                    sleep_time = 300 if interval_seconds <= 60 else interval_seconds * 2
+                    await asyncio.sleep(sleep_time)
+                    continue
+                else:
+                    # Reset counter when market opens
+                    if market_closed_count > 0:
+                        logger.info(f"📊 Market opened - {current_time} IST")
+                        logger.info(f"📊 Resuming strategy execution...")
+                        market_closed_count = 0
+                        last_market_status_log = None
+                
+                # Only execute strategies when market is open
                 await self.run_all_strategies()
+                execution_count += 1
+                
+                # Log execution count every 10 executions for real-time mode
+                if interval_seconds <= 5 and execution_count % log_interval == 0:
+                    logger.info(f"🔄 Executed strategies {execution_count} times")
+                
                 await asyncio.sleep(interval_seconds)
             except Exception as e:
                 logger.error(f"❌ Error in continuous execution: {e}")
@@ -168,4 +287,8 @@ class StrategyEngine:
             await self.market_data_provider.close()
         if self.redis_client:
             await self.redis_client.close()
-        logger.info("✅ Strategy engine closed") 
+        logger.info("✅ Strategy engine closed")
+
+    def get_strategy_stats(self) -> Dict:
+        """Get strategy performance statistics"""
+        return self.strategy_stats 

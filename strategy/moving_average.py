@@ -7,10 +7,12 @@ import numpy as np
 from strategy.base import BaseStrategy
 import logging
 
+logger = logging.getLogger(__name__)
+
 class MovingAverageStrategy(BaseStrategy):
     async def run(self, market_data: dict) -> List[Dict]:
+        logger.debug(f"Market data received: {len(market_data)} symbols")
         signals = []
-        logger = logging.getLogger(__name__)
         for symbol in self.symbols:
             md = market_data.get(symbol)
             current_price = md.ltp if md else None
@@ -42,7 +44,9 @@ class MovingAverageStrategy(BaseStrategy):
         return signals
 
     def _calculate_position_size(self, price: float, confidence: float) -> int:
-        base_quantity = 100
+        base_quantity = self.parameters.get("base_quantity", 100)
+        max_quantity = self.parameters.get("max_quantity", 1000)
+        min_quantity = self.parameters.get("min_quantity", 1)
         confidence_multiplier = confidence * 2
         quantity = int(base_quantity * confidence_multiplier)
-        return max(1, min(quantity, 1000)) 
+        return max(min_quantity, min(quantity, max_quantity)) 

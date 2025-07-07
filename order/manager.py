@@ -1,16 +1,24 @@
 """
-Order Manager - Handles order execution with Angel One broker
+Order Manager - Handles order execution and management
 """
 
-import os
 import asyncio
 import logging
-from typing import Dict, Optional, List
+import time
 from datetime import datetime
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 from SmartApi import SmartConnect
 import pyotp
+import os
+from dotenv import load_dotenv
+import re
+import json
+from models_clean import Order as DBOrder
+from shared.database import get_db_session
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +56,33 @@ class Order:
     filled_price: float = 0.0
     error_message: Optional[str] = None
 
+class RateLimiter:
+    """Rate limiter for API calls"""
+    
+    def __init__(self, max_calls_per_minute: int = 30):
+        self.max_calls_per_minute = max_calls_per_minute
+        self.calls = []
+        self.lock = asyncio.Lock()
+    
+    async def wait_if_needed(self):
+        """Wait if rate limit would be exceeded"""
+        async with self.lock:
+            now = time.time()
+            # Remove calls older than 1 minute
+            self.calls = [call_time for call_time in self.calls if now - call_time < 60]
+            
+            if len(self.calls) >= self.max_calls_per_minute:
+                # Wait until we can make another call
+                wait_time = 60 - (now - self.calls[0]) + 1
+                logger.warning(f"⚠️ Rate limit reached, waiting {wait_time:.1f} seconds")
+                await asyncio.sleep(wait_time)
+                # Recursive call after waiting
+                return await self.wait_if_needed()
+            
+            self.calls.append(now)
+
 class AngelOneBroker:
-    """Angel One broker integration"""
+    """Angel One broker integration with rate limiting"""
     
     def __init__(self):
         self.api_key = os.getenv("ANGEL_ONE_API_KEY")
@@ -62,35 +95,72 @@ class AngelOneBroker:
         
         self.smart_api = None
         self.session = None
-        self._symbol_token_map = None
-        
+        self.rate_limiter = RateLimiter(max_calls_per_minute=20)  # Conservative for initialization
+        self._last_login_time = 0
+        self._session_valid_until = 0
+    
     async def initialize(self):
-        """Initialize the broker"""
-        try:
-            # Initialize SmartAPI
-            self.smart_api = SmartConnect(api_key=self.api_key)
-            
-            # Generate TOTP
-            totp = pyotp.TOTP(self.totp_secret).now()
-            
-            # Login
-            loop = asyncio.get_running_loop()
-            self.session = await loop.run_in_executor(
-                None, 
-                lambda: self.smart_api.generateSession(self.client_code, self.password, totp)
-            )
-            
-            logger.info("✅ Angel One broker initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Angel One broker: {e}")
-            raise
+        """Initialize the broker with retry logic"""
+        max_retries = 3
+        retry_delay = 30  # Start with 30 seconds
+        
+        for attempt in range(max_retries):
+            try:
+                await self._initialize_with_rate_limit()
+                logger.info("✅ Angel One broker initialized successfully")
+                return
+            except Exception as e:
+                error_msg = str(e)
+                if "Access denied because of exceeding access rate" in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"⚠️ Rate limit hit (attempt {attempt + 1}/{max_retries}), waiting {wait_time} seconds")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error("❌ Max retries reached for rate limit")
+                        raise
+                else:
+                    logger.error(f"❌ Failed to initialize Angel One broker: {e}")
+                    raise
+        
+        raise Exception("Failed to initialize broker after all retries")
+    
+    async def _initialize_with_rate_limit(self):
+        """Initialize with rate limiting"""
+        logger.info("🔐 [Broker] Waiting for rate limit before login...")
+        await self.rate_limiter.wait_if_needed()
+        
+        # Initialize SmartAPI
+        logger.info("🔐 [Broker] Initializing SmartAPI...")
+        self.smart_api = SmartConnect(api_key=self.api_key)
+        
+        # Generate TOTP
+        logger.info("🔐 [Broker] Generating TOTP...")
+        totp = pyotp.TOTP(self.totp_secret).now()
+        
+        # Login
+        logger.info("🔐 [Broker] Logging in to Angel One...")
+        loop = asyncio.get_running_loop()
+        self.session = await loop.run_in_executor(
+            None, 
+            lambda: self.smart_api.generateSession(self.client_code, self.password, totp)
+        )
+        
+        # Set session validity (Angel One sessions typically last 24 hours)
+        self._last_login_time = time.time()
+        self._session_valid_until = self._last_login_time + (23 * 3600)  # 23 hours
+    
+    async def _ensure_session_valid(self):
+        """Ensure session is still valid, re-login if needed"""
+        if time.time() > self._session_valid_until:
+            logger.info("🔄 Session expired, re-logging in")
+            await self._initialize_with_rate_limit()
     
     async def place_order(self, order: Order) -> Dict:
-        """Place order with Angel One"""
+        """Place order with Angel One with rate limiting"""
         try:
-            if not self.smart_api:
-                await self.initialize()
+            await self._ensure_session_valid()
             
             # Get symbol token
             symbol_token = self._get_symbol_token(order.symbol)
@@ -100,6 +170,9 @@ class AngelOneBroker:
                     "error": f"Symbol token not found for {order.symbol}",
                     "message": "Invalid symbol"
                 }
+            
+            # Wait for rate limit
+            await self.rate_limiter.wait_if_needed()
             
             # Prepare order parameters
             order_params = {
@@ -123,7 +196,26 @@ class AngelOneBroker:
                 None,
                 lambda: self.smart_api.placeOrder(order_params)
             )
-            
+            logger.debug(f"Raw placeOrder result: {result} (type: {type(result)})")
+            if isinstance(result, str):
+                # If the result looks like an order ID, treat as success
+                if re.match(r"^[0-9A-Fa-f]{12,}[A-Z]{2}$", result):
+                    logger.info(f"✅ Order placed successfully: {result}")
+                    return {
+                        "status": "success",
+                        "broker_order_id": result,
+                        "message": "Order placed successfully"
+                    }
+                # Otherwise, try to parse as JSON
+                try:
+                    result = json.loads(result)
+                except Exception as e:
+                    logger.error(f"❌ Could not parse placeOrder result as JSON: {e}")
+                    return {
+                        "status": "error",
+                        "error": f"Invalid response from broker: {result}",
+                        "message": "Order placement failed"
+                    }
             if result.get("status"):
                 logger.info(f"✅ Order placed successfully: {result.get('data', {}).get('orderid')}")
                 return {
@@ -196,6 +288,34 @@ class OrderManager:
             logger.error(f"❌ Failed to initialize order manager: {e}")
             raise
     
+    def _save_order_to_db(self, order: Order) -> bool:
+        """Save order to database"""
+        try:
+            with get_db_session() as session:
+                db_order = DBOrder(
+                    order_id=order.order_id,
+                    user_id=order.user_id,
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    order_type=order.order_type.value,
+                    quantity=order.quantity,
+                    price=order.price,
+                    status=order.status.value,
+                    strategy_id=order.strategy_id,
+                    created_at=order.created_at,
+                    broker_order_id=order.broker_order_id,
+                    filled_quantity=order.filled_quantity,
+                    filled_price=order.filled_price,
+                    error_message=order.error_message
+                )
+                session.add(db_order)
+                session.commit()
+                logger.info(f"✅ Order {order.order_id} saved to database")
+                return True
+        except Exception as e:
+            logger.error(f"❌ Failed to save order to database: {e}")
+            return False
+    
     async def execute_order(self, order_request: Dict) -> Dict:
         """Execute an order"""
         try:
@@ -213,7 +333,7 @@ class OrderManager:
                 created_at=datetime.now()
             )
             
-            # Store order
+            # Store order in memory
             self.orders[order.order_id] = order
             
             logger.info(f"📝 Created order {order.order_id} for user {order.user_id}")
@@ -233,6 +353,9 @@ class OrderManager:
                 order.status = OrderStatus.REJECTED
                 order.error_message = result.get("error", "Unknown error")
                 logger.error(f"❌ Order {order.order_id} rejected: {order.error_message}")
+            
+            # Save to database
+            self._save_order_to_db(order)
             
             return {
                 "order_id": order.order_id,

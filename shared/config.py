@@ -8,6 +8,8 @@ import os
 import logging
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+from models_clean import Strategy, StrategyConfig as DBStrategyConfig
+from shared.database import get_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -29,35 +31,70 @@ class StrategyConfig:
     enabled: bool
 
 class ConfigLoader:
-    """Loads configurations from CSV and JSON files"""
+    """Loads configurations from CSV and the database"""
     
-    def __init__(self, symbols_file: str = "data/symbols.csv", strategies_file: str = "data/strategies.json"):
+    def __init__(self, symbols_file: str = "data/symbols_to_trade.csv"):
         self.symbols_file = symbols_file
-        self.strategies_file = strategies_file
         self.symbols: Dict[str, SymbolConfig] = {}
         self.strategies: Dict[str, StrategyConfig] = {}
     
     def load_symbols(self) -> Dict[str, SymbolConfig]:
-        """Load symbol configurations from CSV"""
+        """Load symbol configurations from instruments_latest.json and filter by symbols_to_trade.csv"""
         try:
-            if not os.path.exists(self.symbols_file):
-                logger.warning(f"⚠️ Symbols file not found: {self.symbols_file}")
+            # Load instruments data from JSON
+            instruments_data = {}
+            try:
+                with open("data/instruments_latest.json", "r") as f:
+                    instruments = json.load(f)
+                    for inst in instruments:
+                        symbol = inst.get("symbol")
+                        token = inst.get("token")
+                        if symbol and token:
+                            instruments_data[symbol] = {
+                                "token": token,
+                                "exchange": inst.get("exch_seg", "NSE"),
+                                "lot_size": int(float(inst.get("lotsize", 1)))
+                            }
+                logger.info(f"✅ Loaded {len(instruments_data)} instruments from instruments_latest.json")
+            except Exception as e:
+                logger.error(f"❌ Error loading instruments: {e}")
                 return {}
             
-            with open(self.symbols_file, 'r') as file:
-                reader = csv.DictReader(file)
-                for row in reader:
-                    symbol_config = SymbolConfig(
-                        symbol=row['symbol'],
-                        token=row['token'],
-                        exchange=row['exchange'],
-                        lot_size=int(row['lot_size']),
-                        min_quantity=int(row['min_quantity']),
-                        enabled=row['enabled'].lower() == 'true'
-                    )
-                    self.symbols[symbol_config.symbol] = symbol_config
+            # Load symbols to trade from CSV
+            symbols_to_trade = set()
+            try:
+                with open(self.symbols_file, 'r') as file:
+                    reader = csv.DictReader(file)
+                    for row in reader:
+                        symbol_name = row['symbol_name']
+                        enabled = row['enabled'].lower() == 'true'
+                        if enabled:
+                            # Map CSV symbol to JSON symbol format (add -EQ suffix)
+                            json_symbol = f"{symbol_name}-EQ"
+                            symbols_to_trade.add(json_symbol)
+                logger.info(f"✅ Loaded {len(symbols_to_trade)} symbols to trade from {self.symbols_file}")
+            except Exception as e:
+                logger.error(f"❌ Error loading symbols to trade: {e}")
+                return {}
             
-            logger.info(f"✅ Loaded {len(self.symbols)} symbols from {self.symbols_file}")
+            # Create symbol configs for symbols that exist in both JSON and CSV
+            for symbol in symbols_to_trade:
+                if symbol in instruments_data:
+                    inst_data = instruments_data[symbol]
+                    symbol_config = SymbolConfig(
+                        symbol=symbol,
+                        token=inst_data["token"],
+                        exchange=inst_data["exchange"],
+                        lot_size=inst_data["lot_size"],
+                        min_quantity=1,
+                        enabled=True
+                    )
+                    self.symbols[symbol] = symbol_config
+                    logger.info(f"✅ Added symbol: {symbol} (token: {inst_data['token']})")
+                else:
+                    logger.warning(f"⚠️ Symbol {symbol} not found in instruments data")
+            
+            logger.info(f"✅ Loaded {len(self.symbols)} symbols from instruments_latest.json filtered by {self.symbols_file}")
             return self.symbols
             
         except Exception as e:
@@ -65,53 +102,30 @@ class ConfigLoader:
             return {}
     
     def load_strategies(self) -> Dict[str, StrategyConfig]:
-        """Load strategy configurations from JSON"""
+        """Load strategy configurations from the database"""
         try:
-            if not os.path.exists(self.strategies_file):
-                logger.warning(f"⚠️ Strategies file not found: {self.strategies_file}, using defaults")
-                return self._get_default_strategies()
-            
-            with open(self.strategies_file, 'r') as file:
-                strategies_data = json.load(file)
-                
-            for strategy_data in strategies_data:
-                strategy_config = StrategyConfig(
-                    strategy_id=strategy_data['strategy_id'],
-                    strategy_type=strategy_data['strategy_type'],
-                    symbols=strategy_data['symbols'],
-                    parameters=strategy_data['parameters'],
-                    enabled=strategy_data['enabled']
-                )
-                self.strategies[strategy_config.strategy_id] = strategy_config
-            
-            logger.info(f"✅ Loaded {len(self.strategies)} strategies from {self.strategies_file}")
+            with get_db_session() as session:
+                strategies = session.query(Strategy).all()
+                configs = session.query(DBStrategyConfig).all()
+                config_map = {c.strategy_id: c for c in configs}
+                for strategy in strategies:
+                    config = config_map.get(strategy.id)
+                    if not config:
+                        continue
+                    # Build a StrategyConfig-like object
+                    strategy_config = StrategyConfig(
+                        strategy_id=strategy.id,
+                        strategy_type=strategy.strategy_type,
+                        symbols=strategy.symbols,
+                        parameters=strategy.parameters,
+                        enabled=strategy.enabled
+                    )
+                    self.strategies[strategy.id] = strategy_config
+            logger.info(f"✅ Loaded {len(self.strategies)} strategies from database")
             return self.strategies
-            
         except Exception as e:
-            logger.error(f"❌ Error loading strategies: {e}")
-            return self._get_default_strategies()
-    
-    def _get_default_strategies(self) -> Dict[str, StrategyConfig]:
-        """Get default strategy configurations"""
-        default_strategies = {
-            "ma_crossover": StrategyConfig(
-                strategy_id="ma_crossover",
-                strategy_type="moving_average",
-                symbols=["RELIANCE-EQ", "TCS-EQ", "INFY-EQ"],
-                parameters={"short_window": 10, "long_window": 50, "min_confidence": 0.7},
-                enabled=True
-            ),
-            "rsi_strategy": StrategyConfig(
-                strategy_id="rsi_strategy", 
-                strategy_type="rsi",
-                symbols=["RELIANCE-EQ", "TCS-EQ", "INFY-EQ", "HDFC-EQ"],
-                parameters={"period": 14, "oversold": 30, "overbought": 70, "min_confidence": 0.6},
-                enabled=True
-            )
-        }
-        self.strategies = default_strategies
-        logger.info("✅ Using default strategy configurations")
-        return default_strategies
+            logger.error(f"❌ Error loading strategies from database: {e}")
+            return {}
     
     def get_enabled_symbols(self) -> List[str]:
         """Get list of enabled symbols"""
