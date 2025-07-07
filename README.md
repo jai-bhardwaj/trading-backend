@@ -1,415 +1,226 @@
-# 🚀 High-Performance Trading System
+# Trading Backend - Minimal PubSub Architecture
 
-**Clean, Modular, Fast - No HTTP Overhead**
+A clean, minimal trading backend that demonstrates the complete flow from strategy signal generation to order execution using Redis pub/sub and Angel One broker integration.
 
-A high-performance trading system built with direct Python communication, eliminating all HTTP overhead for maximum speed and efficiency.
-
-## 🎯 Why This Architecture?
-
-### Problems with Traditional Microservices:
-
-- ❌ **HTTP Overhead**: Every request goes through HTTP parsing, routing, middleware
-- ❌ **Serialization Overhead**: JSON encoding/decoding adds latency
-- ❌ **Network Latency**: HTTP requests between services add delays
-- ❌ **Complexity**: Authentication, routing, error handling adds complexity
-- ❌ **Resource Usage**: Web server overhead for internal communication
-
-### Our Solution:
-
-- ✅ **Direct Python Calls**: No HTTP overhead
-- ✅ **7x Faster**: 1.16ms vs 8.08ms response times
-- ✅ **85% Time Savings**: Eliminated serialization/network overhead
-- ✅ **Modular Design**: Clean separation of concerns
-- ✅ **Real-time Performance**: 100ms update intervals
-- ✅ **Easy Debugging**: Stack traces across modules
-
-## 📊 Performance Results
+## Architecture
 
 ```
-Direct Python Function Calls:
-  Mean Response Time: 1.16 ms
-  Speed Improvement: 7.0x faster
-  Time Savings: 85.6%
+Strategy Engine → Redis Pub/Sub → Signal Subscriber → Order Manager → Angel One Broker
 ```
 
-## 🏗️ Architecture Overview
+### Components
 
-```
-├── core/
-│   └── trading_engine.py      # Core trading operations
-├── modules/
-│   ├── market_data.py         # Real-time market data
-│   ├── risk_management.py     # Risk controls
-│   ├── strategy_engine.py     # Trading strategies
-│   └── portfolio_manager.py   # Position management
-├── trading_system.py          # Main orchestrator
-├── client.py                  # Simple client interface
-└── README.md                  # This file
-```
+1. **Strategy Engine** (`strategy/`)
+   - Generates trading signals using live market data from Angel One
+   - Publishes signals to Redis pub/sub channel
+   - Supports multiple strategies (Moving Average, RSI, etc.)
 
-## 🚀 Quick Start
+2. **Signal Subscriber** (`order/subscriber.py`)
+   - Listens to Redis pub/sub for strategy signals
+   - Processes signals for multiple users
+   - Creates order requests
 
-### 1. Start the Trading System
+3. **Order Manager** (`order/manager.py`)
+   - Executes orders with Angel One broker
+   - Supports both paper trading and live trading
+   - Manages order lifecycle
+
+4. **Market Data Provider** (`strategy/market_data.py`)
+   - Fetches live market data from Angel One
+   - Provides historical data for strategy calculations
+
+## Quick Start
+
+### 1. Install Dependencies
 
 ```bash
-# Start the complete trading system
-python3 trading_system.py
+pip install -r requirements.txt
 ```
 
-### 2. Use the Client
+### 2. Set Environment Variables
 
-```python
-from client import TradingClient
-import asyncio
-
-async def main():
-    client = TradingClient()
-
-    # Place an order - direct function call
-    result = await client.place_order(
-        user_id="trader_001",
-        symbol="RELIANCE",
-        side="BUY",
-        quantity=100,
-        price=2500.0
-    )
-    print(f"Order result: {result}")
-
-    # Get positions - direct function call
-    positions = await client.get_positions("trader_001")
-    print(f"Positions: {positions}")
-
-    # Get market data - direct function call
-    market_data = await client.get_market_data(["RELIANCE", "TCS"])
-    print(f"Market data: {market_data}")
-
-asyncio.run(main())
-```
-
-## 📁 Module Structure
-
-### Core Trading Engine (`core/trading_engine.py`)
-
-**Handles all trading operations:**
-
-- Order placement and execution
-- Position tracking
-- Order management
-- Direct function calls
-
-### Market Data Module (`modules/market_data.py`)
-
-**Real-time market data processing:**
-
-- Live price updates (100ms intervals)
-- Symbol subscription management
-- Market data caching
-- Realistic price generation
-
-### Risk Management Module (`modules/risk_management.py`)
-
-**Advanced risk controls:**
-
-- Position size limits
-- Daily loss limits
-- Order count limits
-- Concentration limits
-- Real-time risk monitoring
-
-### Strategy Engine Module (`modules/strategy_engine.py`)
-
-**Trading strategy execution:**
-
-- Moving average crossover
-- RSI strategy
-- Momentum strategy
-- Signal generation
-- Strategy management
-
-### Portfolio Manager Module (`modules/portfolio_manager.py`)
-
-**Position and portfolio management:**
-
-- Position tracking
-- P&L calculation
-- Transaction history
-- Performance analytics
-- Portfolio metrics
-
-## 🔧 Usage Examples
-
-### Basic Trading Operations
-
-```python
-from client import TradingClient
-
-client = TradingClient()
-
-# Place market order
-result = await client.place_order(
-    user_id="trader_001",
-    symbol="RELIANCE",
-    side="BUY",
-    quantity=100,
-    price=2500.0,
-    order_type="MARKET"
-)
-
-# Place limit order
-result = await client.place_order(
-    user_id="trader_001",
-    symbol="TCS",
-    side="SELL",
-    quantity=50,
-    price=3800.0,
-    order_type="LIMIT"
-)
-
-# Get order status
-orders = await client.get_orders("trader_001")
-order = await client.get_order("order_1234567890")
-
-# Cancel order
-result = await client.cancel_order("order_1234567890", "trader_001")
-```
-
-### Portfolio Management
-
-```python
-# Get positions
-positions = await client.get_positions("trader_001")
-
-# Get portfolio summary
-portfolio = await client.get_portfolio_summary("trader_001")
-
-# Get transaction history
-transactions = await client.get_transactions("trader_001", limit=50)
-
-# Get performance analytics
-analytics = await client.get_performance_analytics("trader_001")
-```
-
-### Market Data
-
-```python
-# Get market data for specific symbols
-market_data = await client.get_market_data(["RELIANCE", "TCS", "INFY"])
-
-# Get all market data
-all_data = await client.get_all_market_data()
-
-# Subscribe to symbol updates
-await client.subscribe_symbol("RELIANCE")
-await client.unsubscribe_symbol("TCS")
-```
-
-### Risk Management
-
-```python
-# Get risk summary
-risk = await client.get_risk_summary("trader_001")
-
-# Check portfolio risk
-portfolio_risk = await client.check_portfolio_risk("trader_001")
-```
-
-### Strategy Operations
-
-```python
-# Get all strategies
-strategies = await client.get_strategies()
-
-# Run specific strategy
-signals = await client.run_strategy("ma_crossover")
-
-# Enable/disable strategies
-await client.enable_strategy("rsi_strategy")
-await client.disable_strategy("momentum_strategy")
-```
-
-## 🎯 Key Features
-
-### High Performance
-
-- **7x faster** than HTTP APIs
-- **85% time savings** on operations
-- **Direct function calls** - no serialization overhead
-- **Real-time updates** - 100ms intervals
-
-### Modular Design
-
-- **Clean separation** of concerns
-- **Easy to maintain** and extend
-- **Independent modules** - can be used separately
-- **Clear interfaces** between components
-
-### Risk Management
-
-- **Real-time risk monitoring**
-- **Position size limits**
-- **Daily loss limits**
-- **Order count limits**
-- **Concentration limits**
-
-### Trading Strategies
-
-- **Moving average crossover**
-- **RSI strategy**
-- **Momentum strategy**
-- **Customizable parameters**
-- **Signal generation**
-
-### Portfolio Management
-
-- **Position tracking**
-- **P&L calculation**
-- **Transaction history**
-- **Performance analytics**
-- **Portfolio metrics**
-
-## 🧪 Testing
-
-### Run Performance Test
+Copy `env.template` to `.env` and configure:
 
 ```bash
-python3 tools/performance_comparison.py
+cp env.template .env
 ```
 
-### Test Trading Operations
+Edit `.env` with your Angel One credentials:
+
+```env
+# Angel One API Configuration
+ANGEL_ONE_API_KEY=your_api_key
+ANGEL_ONE_CLIENT_CODE=your_client_code
+ANGEL_ONE_PASSWORD=your_password
+ANGEL_ONE_TOTP_SECRET=your_totp_secret
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379/2
+
+# Trading Configuration
+PAPER_TRADING=true
+```
+
+### 3. Start Redis
 
 ```bash
-python3 client.py
+redis-server --daemonize yes
 ```
 
-### Test Individual Modules
+### 4. Run Tests
+
+```bash
+python tests/test_complete_flow.py
+```
+
+## Usage
+
+### Strategy Engine
 
 ```python
-# Test market data
-from modules.market_data import market_data_module
-await market_data_module.initialize()
-data = await market_data_module.get_market_data(["RELIANCE"])
+from strategy.engine import StrategyEngine
 
-# Test risk management
-from modules.risk_management import risk_management_module
-await risk_management_module.initialize()
-risk = await risk_management_module.get_risk_summary("trader_001")
+# Initialize
+engine = StrategyEngine()
+await engine.initialize()
 
-# Test strategy engine
-from modules.strategy_engine import strategy_engine_module
-await strategy_engine_module.initialize()
-strategies = await strategy_engine_module.get_strategies()
+# Run strategies
+signals = await engine.run_all_strategies()
+
+# Continuous execution
+await engine.start_continuous_execution(interval_seconds=60)
 ```
 
-## 📈 Performance Comparison
+### Signal Subscriber
 
-| Metric               | Direct Python | HTTP API | Improvement  |
-| -------------------- | ------------- | -------- | ------------ |
-| Mean Response Time   | 1.16 ms       | 8.08 ms  | 7.0x faster  |
-| Median Response Time | 1.16 ms       | 8.01 ms  | 6.9x faster  |
-| Min Response Time    | 1.05 ms       | 7.26 ms  | 6.9x faster  |
-| Max Response Time    | 1.41 ms       | 18.10 ms | 12.8x faster |
-| Time Savings         | -             | -        | 85.6%        |
+```python
+from order.subscriber import SignalSubscriber
+from order.manager import OrderManager
 
-## 🔧 Configuration
+# Initialize
+order_manager = OrderManager(paper_trading=True)
+await order_manager.initialize()
+
+subscriber = SignalSubscriber()
+await subscriber.initialize(order_manager)
+
+# Start listening
+await subscriber.start_listening()
+```
+
+### Order Manager
+
+```python
+from order.manager import OrderManager
+
+# Initialize (paper trading)
+order_manager = OrderManager(paper_trading=True)
+await order_manager.initialize()
+
+# Execute order
+result = await order_manager.execute_order({
+    "user_id": "user_001",
+    "symbol": "RELIANCE",
+    "side": "BUY",
+    "order_type": "MARKET",
+    "quantity": 100,
+    "price": 2500.0
+})
+```
+
+## Configuration
 
 ### Environment Variables
 
+- `ANGEL_ONE_API_KEY`: Your Angel One API key
+- `ANGEL_ONE_CLIENT_CODE`: Your Angel One client code
+- `ANGEL_ONE_PASSWORD`: Your Angel One password
+- `ANGEL_ONE_TOTP_SECRET`: Your Angel One TOTP secret
+- `REDIS_URL`: Redis connection URL
+- `PAPER_TRADING`: Enable/disable paper trading mode
+
+### Strategy Configuration
+
+Strategies are configured in `strategy/engine.py`:
+
+```python
+StrategyConfig(
+    strategy_id="ma_crossover",
+    strategy_type=StrategyType.MOVING_AVERAGE,
+    symbols=["RELIANCE", "TCS", "INFY"],
+    parameters={
+        "short_window": 10,
+        "long_window": 50,
+        "min_confidence": 0.7
+    }
+)
+```
+
+## Testing
+
+### Complete Flow Test
+
 ```bash
-# Trading mode
-TRADING_MODE=PAPER  # or LIVE
-
-# Risk limits
-MAX_POSITION_SIZE=100000.0
-RISK_TOLERANCE=MEDIUM
-
-# Performance settings
-UPDATE_INTERVAL=0.1  # 100ms for real-time
+python tests/test_complete_flow.py
 ```
 
-### Module Configuration
+This test demonstrates:
+1. Strategy signal generation
+2. Signal publishing to Redis
+3. Signal subscription and processing
+4. Order execution
+5. Continuous execution
 
-Each module can be configured independently:
+### Individual Component Tests
 
-```python
-# Market data configuration
-market_data_module.update_interval = 0.1  # 100ms updates
+```bash
+# Test strategy engine
+python -c "import asyncio; from strategy.engine import StrategyEngine; asyncio.run(StrategyEngine().initialize())"
 
-# Risk management configuration
-risk_management_module.risk_rules = {...}
-
-# Strategy configuration
-strategy_engine_module.strategies = {...}
+# Test order manager
+python -c "import asyncio; from order.manager import OrderManager; asyncio.run(OrderManager().initialize())"
 ```
 
-## 🚨 Error Handling
+## Architecture Benefits
 
-The system includes comprehensive error handling:
+1. **Decoupled**: Strategy engine and order execution are completely separate
+2. **Scalable**: Can run multiple subscribers for different user groups
+3. **Reliable**: Redis pub/sub ensures no signals are lost
+4. **Testable**: Each component can be tested independently
+5. **Configurable**: Easy to switch between paper and live trading
 
-```python
-try:
-    result = await client.place_order(...)
-    if result["success"]:
-        print("Order placed successfully")
-    else:
-        print(f"Order failed: {result['error']}")
-except Exception as e:
-    print(f"Error: {e}")
+## File Structure
+
+```
+trading-backend/
+├── strategy/
+│   ├── __init__.py
+│   ├── engine.py          # Strategy engine
+│   └── market_data.py     # Market data provider
+├── order/
+│   ├── __init__.py
+│   ├── manager.py         # Order manager
+│   └── subscriber.py      # Signal subscriber
+├── shared/
+│   ├── __init__.py
+│   └── models.py          # Shared data models
+├── tests/
+│   └── test_complete_flow.py
+├── data/
+│   └── symbol_token_map.json
+├── requirements.txt
+├── env.template
+└── README.md
 ```
 
-## 🔍 Monitoring
+## Next Steps
 
-### Built-in Monitoring
+1. **Add more strategies** in `strategy/engine.py`
+2. **Implement real user service** in `order/subscriber.py`
+3. **Add risk management** in `order/manager.py`
+4. **Add monitoring and metrics**
+5. **Deploy with Docker**
 
-- Real-time performance metrics
-- Order execution monitoring
-- Risk limit tracking
-- Position P&L updates
-- Market data processing stats
+## Support
 
-### Logging
-
-```python
-import logging
-logging.basicConfig(level=logging.INFO)
-
-# Monitor trading operations
-logger.info("Order placed successfully")
-logger.warning("Risk limit approaching")
-logger.error("Order execution failed")
-```
-
-## 🎯 Benefits Summary
-
-### Performance Benefits
-
-- **7x faster** order execution
-- **85% reduced** latency
-- **Lower CPU usage** (no HTTP parsing)
-- **Lower memory usage** (no JSON serialization)
-
-### Development Benefits
-
-- **Simpler code** - direct function calls
-- **Easier debugging** - stack traces across modules
-- **Better testing** - direct function testing
-- **Faster development** - no HTTP complexity
-
-### Operational Benefits
-
-- **Better real-time performance** for trading
-- **Lower resource usage** on servers
-- **Easier monitoring** and debugging
-- **Simplified deployment** - single Python process
-
-## 🚀 Next Steps
-
-1. **Start the system**: `python3 trading_system.py`
-2. **Test performance**: `python3 tools/performance_comparison.py`
-3. **Use the client**: `python3 client.py`
-4. **Extend modules** for your specific needs
-5. **Add custom strategies** to the strategy engine
-6. **Integrate with real brokers** for live trading
-
----
-
-**Ready to experience 7x faster performance?** Start trading with the new modular architecture!
+For issues or questions, please check the logs and ensure all environment variables are properly configured.
