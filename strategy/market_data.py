@@ -9,9 +9,13 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 from SmartApi import SmartConnect
+from dotenv import load_dotenv
+import json
 
 import pyotp
 from shared.config import ConfigLoader
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +47,35 @@ class MarketDataProvider:
         
         self.smart_api = None
         self.session = None
-        self.config_loader = ConfigLoader()
-        self.symbol_configs = {}
+        self.symbol_configs = self._load_symbol_configs_from_json()
         
+    def _load_symbol_configs_from_json(self):
+        """Load symbol-token mapping from instruments_latest.json"""
+        symbol_configs = {}
+        try:
+            with open("data/instruments_latest.json", "r") as f:
+                instruments = json.load(f)
+                for inst in instruments:
+                    symbol = inst.get("symbol")
+                    token = inst.get("token")
+                    exchange = inst.get("exch_seg")
+                    lot_size = int(float(inst.get("lotsize", 1)))
+                    enabled = True
+                    if symbol and token:
+                        symbol_configs[symbol] = {
+                            "token": token,
+                            "exchange": exchange,
+                            "lot_size": lot_size,
+                            "enabled": enabled
+                        }
+            logger.info(f"✅ Loaded {len(symbol_configs)} symbol-token mappings from instruments_latest.json")
+        except Exception as e:
+            logger.error(f"❌ Error loading symbol-token mapping from instruments_latest.json: {e}")
+        return symbol_configs
+    
     async def initialize(self):
         """Initialize the market data provider"""
         try:
-            # Load symbol configurations
-            self.symbol_configs = self.config_loader.load_symbols()
-            logger.info(f"✅ Loaded {len(self.symbol_configs)} symbol configurations")
-            
             # Initialize SmartAPI
             self.smart_api = SmartConnect(api_key=self.api_key)
             
@@ -73,43 +96,40 @@ class MarketDataProvider:
             raise
     
     async def get_market_data(self, symbols: List[str]) -> Dict[str, MarketData]:
-        """Get live market data for symbols"""
+        """Get LTP market data for symbols using ltpData (REST)."""
         try:
             if not self.smart_api:
                 await self.initialize()
-            
-            # Load symbol token map
-            symbol_tokens = self._get_symbol_tokens(symbols)
-            
-            # Fetch quotes
+
             loop = asyncio.get_running_loop()
-            quotes = await loop.run_in_executor(
-                None,
-                lambda: self.smart_api.getQuotes("NSE", symbol_tokens)
-            )
-            
             result = {}
-            for quote in quotes.get("data", {}).get("fetched", []):
-                symbol = quote.get("tradingSymbol", "")
-                if symbol in symbols:
+            for symbol in symbols:
+                token = self._get_symbol_token(symbol)
+                if not token:
+                    continue
+                # Fetch LTP for each symbol
+                ltp_resp = await loop.run_in_executor(
+                    None,
+                    lambda: self.smart_api.ltpData(exchange="NSE", tradingsymbol=symbol, symboltoken=token)
+                )
+                data = ltp_resp.get("data", {})
+                if data:
                     result[symbol] = MarketData(
                         symbol=symbol,
-                        ltp=float(quote.get("ltp", 0)),
-                        change=float(quote.get("netChange", 0)),
-                        change_percent=float(quote.get("pChange", 0)),
-                        high=float(quote.get("high", 0)),
-                        low=float(quote.get("low", 0)),
-                        volume=int(quote.get("totalTradedVolume", 0)),
-                        bid=float(quote.get("bid", 0)),
-                        ask=float(quote.get("ask", 0)),
+                        ltp=float(data.get("ltp", 0)),
+                        change=0.0,  # Not available in ltpData
+                        change_percent=0.0,  # Not available in ltpData
+                        high=0.0,  # Not available in ltpData
+                        low=0.0,   # Not available in ltpData
+                        volume=0,  # Not available in ltpData
+                        bid=0.0,   # Not available in ltpData
+                        ask=0.0,   # Not available in ltpData
                         timestamp=datetime.now()
                     )
-            
-            logger.info(f"✅ Fetched market data for {len(result)} symbols")
+            logger.info(f"✅ Fetched LTP market data for {len(result)} symbols")
             return result
-            
         except Exception as e:
-            logger.error(f"❌ Error fetching market data: {e}")
+            logger.error(f"❌ Error fetching LTP market data: {e}")
             return {}
     
     async def get_historical_data(self, symbol: str, interval: str = "1D", days: int = 30) -> List[Dict]:
@@ -143,7 +163,7 @@ class MarketDataProvider:
             return []
     
     def _get_symbol_tokens(self, symbols: List[str]) -> List[str]:
-        """Get symbol tokens for symbols"""
+        """Get symbol tokens for symbols from instruments_latest.json mapping"""
         tokens = []
         for symbol in symbols:
             token = self._get_symbol_token(symbol)
@@ -152,20 +172,43 @@ class MarketDataProvider:
         return tokens
     
     def _get_symbol_token(self, symbol: str) -> str:
-        """Get symbol token for a symbol from CSV configuration"""
+        """Get symbol token for a symbol from instruments_latest.json mapping"""
         symbol_config = self.symbol_configs.get(symbol)
         if symbol_config:
-            return symbol_config.token
+            return symbol_config["token"]
         else:
             logger.error(f"❌ Symbol token not found for {symbol}")
             return ""
     
     async def close(self):
-        """Close the market data provider"""
-        if self.smart_api:
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self.smart_api.logout)
-                logger.info("✅ Market data provider closed")
-            except Exception as e:
-                logger.error(f"❌ Error closing market data provider: {e}") 
+        """Close the market data provider (no logout needed)"""
+        pass
+
+    def start_websocket_stream(self, tokens, on_tick_callback):
+        """Start SmartAPI WebSocket client and stream live market data for given tokens."""
+        from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+        import pyotp
+        
+        # Ensure SmartAPI session is initialized
+        if not self.smart_api or not self.session:
+            totp = pyotp.TOTP(self.totp_secret).now()
+            self.session = self.smart_api.generateSession(self.client_code, self.password, totp)
+        feed_token = self.session["data"]["feedToken"]
+        client_id = self.client_code
+        api_key = self.api_key
+        
+        def on_tick(ws, tick):
+            on_tick_callback(tick)
+        def on_connect(ws, response):
+            ws.subscribe([{"exchangeType": 1, "tokens": tokens}])  # 1 for NSE
+        def on_close(ws, code, reason):
+            print("WebSocket closed:", code, reason)
+        def on_error(ws, code, reason):
+            print("WebSocket error:", code, reason)
+        
+        sws = SmartWebSocketV2(api_key, client_id, feed_token, client_id)
+        sws.on_ticks = on_tick
+        sws.on_connect = on_connect
+        sws.on_close = on_close
+        sws.on_error = on_error
+        sws.connect() 

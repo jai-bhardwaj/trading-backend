@@ -12,6 +12,7 @@ from dataclasses import asdict
 from strategy.market_data import MarketDataProvider
 from strategy.registry import register_strategies_to_registry, get_strategy_class
 from shared.config import ConfigLoader
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,9 @@ class StrategyEngine:
         self.strategies = {}  # strategy_id -> strategy instance
         self.running = False
         self.config_loader = ConfigLoader()
+        self.live_market_data = {}  # token -> tick data
+        self._market_data_lock = threading.Lock()
+        self._ws_thread = None
     
     async def initialize(self):
         try:
@@ -49,6 +53,12 @@ class StrategyEngine:
             # Load strategies dynamically
             await self._load_strategies_from_config()
             logger.info("✅ Strategy engine initialized")
+
+            # Start WebSocket for live market data
+            all_tokens = self._collect_all_tokens()
+            logger.info(f"🚦 Starting WebSocket for tokens: {all_tokens}")
+            self._ws_thread = threading.Thread(target=self._start_ws_stream, args=(all_tokens,), daemon=True)
+            self._ws_thread.start()
         except Exception as e:
             logger.error(f"❌ Failed to initialize strategy engine: {e}")
             raise
@@ -84,6 +94,36 @@ class StrategyEngine:
         except Exception as e:
             logger.error(f"❌ Error publishing signal: {e}")
     
+    def _collect_all_tokens(self):
+        """Collect all unique tokens needed by all strategies"""
+        tokens = set()
+        for strategy in self.strategies.values():
+            for symbol in strategy.symbols:
+                token = self.market_data_provider._get_symbol_token(symbol)
+                if token:
+                    tokens.add(token)
+        return list(tokens)
+
+    def _start_ws_stream(self, tokens):
+        def on_tick(tick):
+            # tick is a list of dicts
+            with self._market_data_lock:
+                for t in tick:
+                    token = t.get("token")
+                    if token:
+                        self.live_market_data[token] = t
+        self.market_data_provider.start_websocket_stream(tokens, on_tick)
+
+    def _get_market_data_for_symbols(self, symbols):
+        """Return a dict: symbol -> latest market data (from live_market_data)"""
+        symbol_data = {}
+        with self._market_data_lock:
+            for symbol in symbols:
+                token = self.market_data_provider._get_symbol_token(symbol)
+                if token and token in self.live_market_data:
+                    symbol_data[symbol] = self.live_market_data[token]
+        return symbol_data
+
     async def run_strategy(self, strategy_id: str) -> List[Dict]:
         try:
             if strategy_id not in self.strategies:
@@ -91,7 +131,9 @@ class StrategyEngine:
             strategy = self.strategies[strategy_id]
             if not strategy.enabled:
                 return []
-            signals = await strategy.run()
+            # Pass live market data for this strategy's symbols
+            market_data = self._get_market_data_for_symbols(strategy.symbols)
+            signals = await strategy.run(market_data)
             for signal in signals:
                 await self.publish_signal(signal)
             return signals

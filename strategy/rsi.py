@@ -5,19 +5,26 @@ from typing import Dict, Any, List
 from datetime import datetime
 import numpy as np
 from strategy.base import BaseStrategy
+import logging
 
 class RSIStrategy(BaseStrategy):
-    async def run(self) -> List[Dict]:
+    async def run(self, market_data: dict) -> List[Dict]:
         signals = []
+        logger = logging.getLogger(__name__)
         for symbol in self.symbols:
+            md = market_data.get(symbol)
+            current_price = md.ltp if md else None
+            if current_price is None:
+                logger.warning(f"No live price for {symbol}, skipping.")
+                continue
             historical_data = await self.market_data_provider.get_historical_data(
                 symbol, "1D", self.parameters["period"] + 10
             )
-            if len(historical_data) < self.parameters["period"]:
+            if not historical_data or len(historical_data) < self.parameters["period"]:
+                logger.warning(f"No historical data for {symbol}, skipping.")
                 continue
             prices = [float(candle["close"]) for candle in historical_data]
             rsi = self._calculate_rsi(prices, self.parameters["period"])
-            current_price = prices[-1]
             signal_type = "HOLD"
             confidence = 0.0
             if rsi < self.parameters["oversold"]:
@@ -35,7 +42,7 @@ class RSIStrategy(BaseStrategy):
                     "price": current_price,
                     "quantity": self._calculate_position_size(current_price, confidence),
                     "timestamp": datetime.now(),
-                    "metadata": {"rsi": rsi, "period": self.parameters["period"]}
+                    "metadata": {"rsi": rsi, "period": self.parameters["period"], "live_price": current_price}
                 })
         return signals
 
