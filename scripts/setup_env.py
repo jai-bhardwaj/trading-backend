@@ -6,7 +6,8 @@ Setup environment variables for the trading system
 import os
 import sys
 from pathlib import Path
-
+from dotenv import load_dotenv
+load_dotenv()
 def setup_environment():
     """Setup environment variables"""
     

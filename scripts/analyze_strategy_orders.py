@@ -6,12 +6,14 @@ Analyze strategy orders
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from dotenv import load_dotenv
+load_dotenv()
 import logging
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from models_clean import Order, Strategy
 from datetime import datetime, timedelta
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
