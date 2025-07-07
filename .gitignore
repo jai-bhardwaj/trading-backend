@@ -198,5 +198,14 @@ benchmark_*.json
 *.pid
 
 # Cache directories
+
+# Systemd service files
+*.service
+trading-backend.service
+
+# Setup and monitoring scripts (system-specific)
+setup_background_service.sh
+scripts/setup_service.py
+scripts/monitor_service.py
 .cache/
 cache/
