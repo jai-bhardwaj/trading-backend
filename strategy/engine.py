@@ -121,32 +121,55 @@ class StrategyEngine:
         return list(tokens)
 
     def _start_ws_stream(self, tokens):
+        logger.info(f"[WS] Strategy engine: Starting WebSocket stream with {len(tokens)} tokens")
+        logger.info(f"[WS] Strategy engine: Tokens: {tokens}")
+        
         def on_tick(tick):
-            # tick is a list of dicts from WebSocket
+            logger.info(f"[WS] Strategy engine: Received tick(s): {tick}")
             with self._market_data_lock:
-                for t in tick:
+                # Handle both single tick dict and list of ticks
+                if isinstance(tick, list):
+                    ticks_to_process = tick
+                elif isinstance(tick, dict):
+                    ticks_to_process = [tick]
+                else:
+                    logger.warning(f"[WS] Strategy engine: Unexpected tick format: {type(tick)}")
+                    return
+                
+                for t in ticks_to_process:
                     token = t.get("token")
                     if token:
                         # Convert WebSocket data to MarketData format
                         from strategy.market_data import MarketData
                         from datetime import datetime
                         
+                        # Extract LTP from the WebSocket data structure
+                        ltp = float(t.get("ltp", 0))  # LTP is already in rupees, not paise
+                        
                         market_data = MarketData(
                             symbol=t.get("symbol", ""),
-                            ltp=float(t.get("last_traded_price", 0)) / 100,  # WebSocket price is in paise
+                            ltp=ltp,
                             change=0.0,
                             change_percent=0.0,
-                            high=float(t.get("high_price_of_the_day", 0)) / 100,
-                            low=float(t.get("low_price_of_the_day", 0)) / 100,
-                            volume=int(t.get("volume_trade_for_the_day", 0)),
+                            high=0.0,  # Not available in LTP mode
+                            low=0.0,   # Not available in LTP mode
+                            volume=0,   # Not available in LTP mode
                             bid=0.0,
                             ask=0.0,
                             timestamp=datetime.now()
                         )
                         self.live_market_data[token] = market_data
+                        logger.info(f"[WS] Strategy engine: Stored tick for token {token} ({t.get('symbol', 'Unknown')}) @ {market_data.ltp}")
                         
-                        logger.debug(f"📈 WebSocket tick: {t.get('symbol', 'Unknown')} @ {market_data.ltp}")
-        self.market_data_provider.start_websocket_stream(tokens, on_tick)
+        try:
+            logger.info("[WS] Strategy engine: Calling market_data_provider.start_websocket_stream...")
+            self.market_data_provider.start_websocket_stream(tokens, on_tick)
+            logger.info("[WS] Strategy engine: WebSocket stream started successfully")
+        except Exception as e:
+            logger.error(f"[WS] Strategy engine: Error starting WebSocket stream: {e}")
+            import traceback
+            logger.error(f"[WS] Strategy engine: Traceback: {traceback.format_exc()}")
+            raise
 
     async def _get_market_data_for_symbols(self, symbols):
         """Return a dict: symbol -> latest market data (WebSocket + LTP fallback)"""

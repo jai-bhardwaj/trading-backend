@@ -12,10 +12,12 @@ async def main():
     # Load config from environment variables
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/2")
     paper_trading = os.getenv("PAPER_TRADING", "false").lower() == "true"
-    interval = int(os.getenv("STRATEGY_EXECUTION_INTERVAL", 1))  # 1 second for real-time WebSocket trading
+    interval = int(os.getenv("STRATEGY_EXECUTION_INTERVAL", 5))  # 5 seconds for responsive testing
 
     logger.info(f"🚀 Starting trading system with {interval}s execution interval")
     logger.info(f"📊 Paper trading: {paper_trading}")
+    logger.info(f"🔧 Market hours override: {os.getenv('MARKET_HOURS_ALWAYS_OPEN', 'false')}")
+    logger.info(f"🔧 Test mode: {os.getenv('MARKET_HOURS_TEST_MODE', 'false')}")
 
     # Initialize components
     engine = StrategyEngine(redis_url=redis_url)

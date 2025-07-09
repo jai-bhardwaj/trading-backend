@@ -4,6 +4,7 @@ Market Hours Utility - Check if Indian markets are open
 from datetime import datetime, time
 import pytz
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,16 @@ class MarketHours:
         
     def is_market_open(self) -> bool:
         """Check if Indian markets are currently open"""
+        # TEST OVERRIDE: Always open if env var is set
+        if os.getenv("MARKET_HOURS_ALWAYS_OPEN", "false").lower() == "true":
+            logger.info("[TEST] MARKET_HOURS_ALWAYS_OPEN is set: Forcing market open for testing.")
+            return True
+        
+        # TEST MODE: Allow testing during market hours without override
+        if os.getenv("MARKET_HOURS_TEST_MODE", "false").lower() == "true":
+            logger.info("[TEST] MARKET_HOURS_TEST_MODE is set: Allowing testing during market hours.")
+            return True
+            
         try:
             # Get current time in IST
             now = datetime.now(self.ist_tz)
@@ -43,6 +54,17 @@ class MarketHours:
     
     def get_market_status(self) -> dict:
         """Get detailed market status"""
+        # TEST OVERRIDE: Always open if env var is set
+        if os.getenv("MARKET_HOURS_ALWAYS_OPEN", "false").lower() == "true":
+            logger.info("[TEST] MARKET_HOURS_ALWAYS_OPEN is set: Forcing market open for testing.")
+            return {
+                "is_open": True,
+                "current_time": datetime.now(self.ist_tz).strftime('%H:%M:%S'),
+                "current_day": datetime.now(self.ist_tz).strftime('%A'),
+                "market_hours": f"{self.market_start.strftime('%H:%M')} - {self.market_end.strftime('%H:%M')} IST",
+                "next_event": "Market closes in",
+                "next_event_time": None
+            }
         try:
             now = datetime.now(self.ist_tz)
             current_time = now.time()

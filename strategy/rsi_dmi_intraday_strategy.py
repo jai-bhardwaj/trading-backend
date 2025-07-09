@@ -127,7 +127,7 @@ class RSIDMIIntradayStrategy(BaseStrategy):
             start_time = end_time.replace(hour=9, minute=15, second=0, microsecond=0)
             
             hist_data = await self.market_data_provider.get_historical_data(
-                symbol, start_time, end_time, "1minute"
+                symbol, "1minute", 1  # symbol, interval, days
             )
             return hist_data
         except Exception as e:

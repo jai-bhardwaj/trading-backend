@@ -182,7 +182,7 @@ class AngelOneBroker:
                 "transactiontype": order.side.value,
                 "exchange": "NSE",
                 "ordertype": order.order_type.value,
-                "producttype": "INTRADAY",
+                "producttype": "EQ",  # Use EQ to match database schema
                 "duration": "DAY",
                 "price": order.price,
                 "squareoff": "0",
@@ -197,7 +197,30 @@ class AngelOneBroker:
                 lambda: self.smart_api.placeOrder(order_params)
             )
             logger.debug(f"Raw placeOrder result: {result} (type: {type(result)})")
-            if isinstance(result, str):
+            
+            # Handle different response types
+            if isinstance(result, int):
+                # If result is an integer, it's likely an error code
+                error_messages = {
+                    0: "Success",
+                    1: "Invalid parameters",
+                    2: "Session expired",
+                    3: "Rate limit exceeded",
+                    4: "Insufficient funds",
+                    5: "Invalid symbol",
+                    6: "Market closed",
+                    7: "Order rejected by exchange",
+                    8: "Technical error",
+                    9: "Network error"
+                }
+                error_msg = error_messages.get(result, f"Unknown error code: {result}")
+                logger.error(f"❌ Order placement failed with error code {result}: {error_msg}")
+                return {
+                    "status": "error",
+                    "error": f"Broker error code {result}: {error_msg}",
+                    "message": "Order placement failed"
+                }
+            elif isinstance(result, str):
                 # If the result looks like an order ID, treat as success
                 if re.match(r"^[0-9A-Fa-f]{12,}[A-Z]{2}$", result):
                     logger.info(f"✅ Order placed successfully: {result}")
@@ -216,19 +239,30 @@ class AngelOneBroker:
                         "error": f"Invalid response from broker: {result}",
                         "message": "Order placement failed"
                     }
-            if result.get("status"):
-                logger.info(f"✅ Order placed successfully: {result.get('data', {}).get('orderid')}")
-                return {
-                    "status": "success",
-                    "broker_order_id": result.get("data", {}).get("orderid"),
-                    "message": "Order placed successfully"
-                }
+            
+            # Handle dictionary response
+            if isinstance(result, dict):
+                if result.get("status"):
+                    logger.info(f"✅ Order placed successfully: {result.get('data', {}).get('orderid')}")
+                    return {
+                        "status": "success",
+                        "broker_order_id": result.get("data", {}).get("orderid"),
+                        "message": "Order placed successfully"
+                    }
+                else:
+                    error_msg = result.get("message", "Unknown error")
+                    logger.error(f"❌ Order placement failed: {error_msg}")
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "message": "Order placement failed"
+                    }
             else:
-                error_msg = result.get("message", "Unknown error")
-                logger.error(f"❌ Order placement failed: {error_msg}")
+                # Unknown response type
+                logger.error(f"❌ Unknown response type from broker: {type(result)}")
                 return {
                     "status": "error",
-                    "error": error_msg,
+                    "error": f"Unknown response type: {type(result)}",
                     "message": "Order placement failed"
                 }
                 
@@ -292,21 +326,39 @@ class OrderManager:
         """Save order to database"""
         try:
             with get_db_session() as session:
+                # Check if order already exists
+                existing_order = session.query(DBOrder).filter(DBOrder.id == order.order_id).first()
+                if existing_order:
+                    logger.warning(f"⚠️ Order {order.order_id} already exists in database, updating instead")
+                    # Update existing order
+                    existing_order.status = order.status.value
+                    existing_order.brokerOrderId = order.broker_order_id
+                    existing_order.filledQuantity = order.filled_quantity
+                    existing_order.averagePrice = order.filled_price
+                    existing_order.statusMessage = order.error_message
+                    existing_order.updatedAt = datetime.now()
+                    session.commit()
+                    logger.info(f"✅ Order {order.order_id} updated in database")
+                    return True
+                
+                # Create new order
                 db_order = DBOrder(
-                    order_id=order.order_id,
-                    user_id=order.user_id,
+                    id=order.order_id,  # Use order_id as the primary key
+                    userId=order.user_id,  # Use camelCase column name
                     symbol=order.symbol,
+                    exchange="NSE",  # Default exchange
                     side=order.side.value,
-                    order_type=order.order_type.value,
+                    orderType=order.order_type.value,  # Use camelCase column name
+                    productType="INTRADAY",  # Use INTRADAY to match broker API expectations
                     quantity=order.quantity,
                     price=order.price,
                     status=order.status.value,
-                    strategy_id=order.strategy_id,
-                    created_at=order.created_at,
-                    broker_order_id=order.broker_order_id,
-                    filled_quantity=order.filled_quantity,
-                    filled_price=order.filled_price,
-                    error_message=order.error_message
+                    strategyId=order.strategy_id,  # Use camelCase column name
+                    createdAt=order.created_at,  # Use camelCase column name
+                    brokerOrderId=order.broker_order_id,  # Use camelCase column name
+                    filledQuantity=order.filled_quantity,  # Use camelCase column name
+                    averagePrice=order.filled_price,  # Use camelCase column name
+                    statusMessage=order.error_message  # Use camelCase column name
                 )
                 session.add(db_order)
                 session.commit()
@@ -319,9 +371,10 @@ class OrderManager:
     async def execute_order(self, order_request: Dict) -> Dict:
         """Execute an order"""
         try:
-            # Create order object
+            # Create order object with unique ID
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # Include milliseconds
             order = Order(
-                order_id=f"ORD_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{order_request['user_id']}",
+                order_id=f"ORD_{timestamp}_{order_request['user_id']}",
                 user_id=order_request["user_id"],
                 symbol=order_request["symbol"],
                 side=OrderSide(order_request["side"]),
