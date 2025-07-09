@@ -1,5 +1,5 @@
 # Updated SQLAlchemy models for cleaned trading system
-from sqlalchemy import Column, Boolean, Text, DateTime, JSON, ARRAY
+from sqlalchemy import Column, Boolean, Text, DateTime, JSON, ARRAY, Integer, Float
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import uuid
@@ -33,3 +33,31 @@ class StrategyConfig(Base):
 class User(Base):
     __tablename__ = "users"
     id = Column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
+
+class Order(Base):
+    __tablename__ = "orders"
+    id = Column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
+    userId = Column(Text, nullable=False)
+    strategyId = Column(Text, nullable=True)
+    symbol = Column(Text, nullable=False)
+    exchange = Column(Text, nullable=False)
+    side = Column(Text, nullable=False)
+    orderType = Column(Text, nullable=False)
+    productType = Column(Text, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=True)
+    triggerPrice = Column(Float, nullable=True)
+    brokerOrderId = Column(Text, nullable=True)
+    status = Column(Text, nullable=False)
+    statusMessage = Column(Text, nullable=True)
+    filledQuantity = Column(Integer, nullable=False, default=0)
+    averagePrice = Column(Float, nullable=True)
+    tags = Column(JSON, nullable=True)
+    notes = Column(Text, nullable=True)
+    placedAt = Column(DateTime, nullable=True)
+    executedAt = Column(DateTime, nullable=True)
+    cancelledAt = Column(DateTime, nullable=True)
+    createdAt = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updatedAt = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    variety = Column(Text, nullable=False, default="REGULAR")
+    parentOrderId = Column(Text, nullable=True)
