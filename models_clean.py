@@ -61,3 +61,15 @@ class Order(Base):
     updatedAt = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     variety = Column(Text, nullable=False, default="REGULAR")
     parentOrderId = Column(Text, nullable=True)
+
+class UserStrategyConfig(Base):
+    __tablename__ = "user_strategy_configs"
+    id = Column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(Text, nullable=False)
+    strategy_id = Column(Text, nullable=False)
+    enabled = Column(Boolean, default=True)
+    risk_limits = Column(JSON)
+    order_preferences = Column(JSON)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Unique constraint on (user_id, strategy_id) is handled at the DB level

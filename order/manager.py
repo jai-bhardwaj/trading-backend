@@ -15,7 +15,7 @@ import os
 from dotenv import load_dotenv
 import re
 import json
-from models_clean import Order as DBOrder
+from models_clean import Order as DBOrder, UserStrategyConfig
 from shared.database import get_db_session
 
 load_dotenv()
@@ -368,9 +368,46 @@ class OrderManager:
             logger.error(f"❌ Failed to save order to database: {e}")
             return False
     
+    def _get_user_strategy_config(self, user_id, strategy_id):
+        with get_db_session() as session:
+            config = session.query(UserStrategyConfig).filter_by(
+                user_id=user_id,
+                strategy_id=strategy_id
+            ).first()
+            return config
+
+    def _check_user_strategy_rules(self, user_id, strategy_id, order_request):
+        config = self._get_user_strategy_config(user_id, strategy_id)
+        if not config or not config.enabled:
+            logger.info(f"🚫 Strategy {strategy_id} is disabled for user {user_id}")
+            return False, "Strategy disabled for user"
+        # Check order preferences (e.g., min_confidence)
+        min_conf = (config.order_preferences or {}).get('min_confidence', 0.0)
+        if 'confidence' in order_request and order_request['confidence'] < min_conf:
+            logger.info(f"🚫 Order confidence {order_request['confidence']} below min_confidence {min_conf} for user {user_id}, strategy {strategy_id}")
+            return False, f"Order confidence below min_confidence ({min_conf})"
+        # Check risk limits (e.g., max_position_size)
+        max_pos = (config.risk_limits or {}).get('max_position_size')
+        if max_pos is not None:
+            # TODO: Query current position for user/strategy and check
+            # For now, just log the check
+            logger.info(f"ℹ️ Would check max_position_size {max_pos} for user {user_id}, strategy {strategy_id}")
+        # Add more checks as needed
+        return True, None
+
     async def execute_order(self, order_request: Dict) -> Dict:
         """Execute an order"""
         try:
+            user_id = order_request["user_id"]
+            strategy_id = order_request.get("strategy_id", "unknown")
+            # User-strategy config checks
+            ok, reason = self._check_user_strategy_rules(user_id, strategy_id, order_request)
+            if not ok:
+                return {
+                    "status": "rejected",
+                    "error": reason,
+                    "message": f"Order rejected: {reason}"
+                }
             # Create order object with unique ID
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # Include milliseconds
             order = Order(
