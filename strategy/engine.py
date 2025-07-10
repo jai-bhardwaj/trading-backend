@@ -207,6 +207,8 @@ class StrategyEngine:
             market_data = await self._get_market_data_for_symbols(strategy.symbols)
             signals = await strategy.run(market_data)
             for signal in signals:
+                # Add strategy_id to the signal before publishing
+                signal['strategy_id'] = strategy_id
                 await self.publish_signal(signal)
             return signals
         except Exception as e:

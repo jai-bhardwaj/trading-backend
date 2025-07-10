@@ -29,10 +29,20 @@ class StrategyConfig(Base):
     auto_start = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    
 class User(Base):
     __tablename__ = "users"
     id = Column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(Text, nullable=True)
+    username = Column(Text, nullable=True)
+    hashed_password = Column(Text, nullable=True)
+    first_name = Column(Text, nullable=True)
+    last_name = Column(Text, nullable=True)
+    role = Column(Text, nullable=False, default='USER')
+    status = Column(Text, nullable=False, default='ACTIVE')
+    email_verified = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Order(Base):
     __tablename__ = "orders"
@@ -61,7 +71,7 @@ class Order(Base):
     updatedAt = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     variety = Column(Text, nullable=False, default="REGULAR")
     parentOrderId = Column(Text, nullable=True)
-
+    
 class UserStrategyConfig(Base):
     __tablename__ = "user_strategy_configs"
     id = Column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))

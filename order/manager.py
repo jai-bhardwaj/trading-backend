@@ -182,13 +182,20 @@ class AngelOneBroker:
                 "transactiontype": order.side.value,
                 "exchange": "NSE",
                 "ordertype": order.order_type.value,
-                "producttype": "EQ",  # Use EQ to match database schema
+                "producttype": "INTRADAY",  # Use INTRADAY for day trading
                 "duration": "DAY",
-                "price": order.price,
                 "squareoff": "0",
                 "stoploss": "0",
-                "quantity": order.quantity
+                "quantity": str(order.quantity)  # Ensure quantity is string
             }
+            
+            # Only add price for limit orders, not market orders
+            if order.order_type == OrderType.MARKET:
+                order_params["price"] = "0"  # Market orders use 0 for price
+            else:
+                order_params["price"] = str(order.price)  # Limit orders need actual price
+            
+            logger.info(f"🔧 Order params for {order.symbol}: {order_params}")
             
             # Place order
             loop = asyncio.get_running_loop()
@@ -200,26 +207,36 @@ class AngelOneBroker:
             
             # Handle different response types
             if isinstance(result, int):
-                # If result is an integer, it's likely an error code
-                error_messages = {
-                    0: "Success",
-                    1: "Invalid parameters",
-                    2: "Session expired",
-                    3: "Rate limit exceeded",
-                    4: "Insufficient funds",
-                    5: "Invalid symbol",
-                    6: "Market closed",
-                    7: "Order rejected by exchange",
-                    8: "Technical error",
-                    9: "Network error"
-                }
-                error_msg = error_messages.get(result, f"Unknown error code: {result}")
-                logger.error(f"❌ Order placement failed with error code {result}: {error_msg}")
-                return {
-                    "status": "error",
-                    "error": f"Broker error code {result}: {error_msg}",
-                    "message": "Order placement failed"
-                }
+                # Check if this is a large integer that looks like an order ID (starts with date)
+                if result > 1000000:  # Large numbers are likely order IDs
+                    logger.info(f"✅ Order placed successfully with ID: {result}")
+                    return {
+                        "status": "success",
+                        "broker_order_id": str(result),
+                        "message": "Order placed successfully"
+                    }
+                else:
+                    # Small integers are error codes
+                    error_messages = {
+                        0: "Success",
+                        1: "Invalid parameters",
+                        2: "Session expired",
+                        3: "Rate limit exceeded",
+                        4: "Insufficient funds",
+                        5: "Invalid symbol",
+                        6: "Market closed",
+                        7: "Order rejected by exchange",
+                        8: "Technical error",
+                        9: "Network error"
+                    }
+                    error_msg = error_messages.get(result, f"Unknown error code: {result}")
+                    logger.error(f"❌ Order placement failed with error code {result}: {error_msg}")
+                    logger.info(f"🔍 Full order details: {order_params}")
+                    return {
+                        "status": "error",
+                        "error": f"Broker error code {result}: {error_msg}",
+                        "message": "Order placement failed"
+                    }
             elif isinstance(result, str):
                 # If the result looks like an order ID, treat as success
                 if re.match(r"^[0-9A-Fa-f]{12,}[A-Z]{2}$", result):
@@ -259,10 +276,10 @@ class AngelOneBroker:
                     }
             else:
                 # Unknown response type
-                logger.error(f"❌ Unknown response type from broker: {type(result)}")
+                logger.error(f"❌ Unknown response type from broker: {type(result)}, value: {result}")
                 return {
                     "status": "error",
-                    "error": f"Unknown response type: {type(result)}",
+                    "error": f"Unknown response type: {type(result)}, value: {result}",
                     "message": "Order placement failed"
                 }
                 
@@ -374,27 +391,35 @@ class OrderManager:
                 user_id=user_id,
                 strategy_id=strategy_id
             ).first()
-            return config
+            
+            if config:
+                # Extract data while session is active to avoid session issues
+                return {
+                    'enabled': config.enabled,
+                    'risk_limits': config.risk_limits or {},
+                    'order_preferences': config.order_preferences or {}
+                }
+            return None
 
     def _check_user_strategy_rules(self, user_id, strategy_id, order_request):
         config = self._get_user_strategy_config(user_id, strategy_id)
-        if not config or not config.enabled:
+        if not config or not config['enabled']:
             logger.info(f"🚫 Strategy {strategy_id} is disabled for user {user_id}")
             return False, "Strategy disabled for user"
         # Check order preferences (e.g., min_confidence)
-        min_conf = (config.order_preferences or {}).get('min_confidence', 0.0)
+        min_conf = config['order_preferences'].get('min_confidence', 0.0)
         if 'confidence' in order_request and order_request['confidence'] < min_conf:
             logger.info(f"🚫 Order confidence {order_request['confidence']} below min_confidence {min_conf} for user {user_id}, strategy {strategy_id}")
             return False, f"Order confidence below min_confidence ({min_conf})"
         # Check risk limits (e.g., max_position_size)
-        max_pos = (config.risk_limits or {}).get('max_position_size')
+        max_pos = config['risk_limits'].get('max_position_size')
         if max_pos is not None:
             # TODO: Query current position for user/strategy and check
             # For now, just log the check
             logger.info(f"ℹ️ Would check max_position_size {max_pos} for user {user_id}, strategy {strategy_id}")
         # Add more checks as needed
         return True, None
-
+    
     async def execute_order(self, order_request: Dict) -> Dict:
         """Execute an order"""
         try:
