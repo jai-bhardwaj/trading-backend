@@ -2,44 +2,68 @@
 FastAPI Trading Backend Application
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
+from typing import Dict, Any
 
 from .models import HealthResponse
 from .services.trading_service import TradingService
-from .routes import strategies, user_configs, orders, positions, trades
+from .routes import strategies, user_configs, orders, positions, trades, marketplace, user
+from . import dependencies
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global trading service instance
-trading_service = None
+class AppState:
+    """Application state container"""
+    def __init__(self):
+        self.trading_service: TradingService = None
+        self.initialized: bool = False
+
+app_state = AppState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global trading_service
+    global app_state
     
     # Startup
     logger.info("🚀 Starting Trading Backend API...")
     try:
-        trading_service = TradingService()
-        await trading_service.initialize()
+        app_state.trading_service = TradingService()
+        await app_state.trading_service.initialize()
+        app_state.initialized = True
         logger.info("✅ Trading service initialized successfully")
+        
+        # Store in app state as well for direct access
+        app.state.trading_service = app_state.trading_service
+        app.state.initialized = True
+        
+        # Set the app state in dependencies module
+        dependencies.set_app_state(app_state)
+        
     except Exception as e:
         logger.error(f"❌ Failed to initialize trading service: {e}")
-        raise
+        app_state.initialized = False
+        # Don't raise - let the app start but mark as unhealthy
+        logger.warning("⚠️ API will start but trading service is unavailable")
     
     yield
     
     # Shutdown
     logger.info("🛑 Shutting down Trading Backend API...")
-    if trading_service and trading_service.order_manager:
-        await trading_service.order_manager.close()
+    if app_state.trading_service and app_state.trading_service.order_manager:
+        try:
+            await app_state.trading_service.order_manager.close()
+        except Exception as e:
+            logger.error(f"❌ Error during shutdown: {e}")
+    
+    app_state.trading_service = None
+    app_state.initialized = False
     logger.info("✅ Trading Backend API shutdown complete")
 
 # Create FastAPI app
@@ -59,12 +83,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include routers with dependency injection
 app.include_router(strategies.router)
 app.include_router(user_configs.router)
 app.include_router(orders.router)
 app.include_router(positions.router)
 app.include_router(trades.router)
+app.include_router(marketplace.router)
+app.include_router(user.router)
 
 @app.get("/", tags=["root"])
 async def root():
@@ -72,17 +98,16 @@ async def root():
     return {
         "message": "Trading Backend API",
         "version": "1.0.0",
-        "status": "running"
+        "status": "running",
+        "trading_service_initialized": app_state.initialized
     }
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint"""
-    global trading_service
-    
     try:
-        if trading_service:
-            health_data = trading_service.get_health_status()
+        if app_state.trading_service and app_state.initialized:
+            health_data = app_state.trading_service.get_health_status()
         else:
             health_data = {
                 "status": "unhealthy",

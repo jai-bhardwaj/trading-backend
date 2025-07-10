@@ -2,15 +2,16 @@
 Positions API Routes
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict
+from ..dependencies import get_trading_service
+from ..services.trading_service import TradingService
 
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 
 @router.get("/{user_id}", response_model=List[Dict])
-async def get_user_positions(user_id: str):
+async def get_user_positions(user_id: str, trading_service: TradingService = Depends(get_trading_service)):
     """Get positions for a user"""
-    from ..main import trading_service
     try:
         positions = trading_service.get_user_positions(user_id)
         return positions
@@ -18,9 +19,8 @@ async def get_user_positions(user_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get user positions: {str(e)}")
 
 @router.get("/{user_id}/{symbol}", response_model=Dict)
-async def get_user_position(user_id: str, symbol: str):
+async def get_user_position(user_id: str, symbol: str, trading_service: TradingService = Depends(get_trading_service)):
     """Get specific position for a user and symbol"""
-    from ..main import trading_service
     try:
         position = trading_service.get_user_position(user_id, symbol)
         if not position:

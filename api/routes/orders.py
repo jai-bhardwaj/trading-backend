@@ -2,16 +2,17 @@
 Orders API Routes
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict
 from ..models import OrderRequest, OrderResponse
+from ..dependencies import get_trading_service
+from ..services.trading_service import TradingService
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
 @router.post("/", response_model=OrderResponse)
-async def place_order(request: OrderRequest):
+async def place_order(request: OrderRequest, trading_service: TradingService = Depends(get_trading_service)):
     """Place an order"""
-    from ..main import trading_service
     try:
         # Convert Pydantic model to dict
         order_data = {
@@ -38,9 +39,8 @@ async def place_order(request: OrderRequest):
         raise HTTPException(status_code=500, detail=f"Failed to place order: {str(e)}")
 
 @router.get("/{user_id}", response_model=List[Dict])
-async def get_user_orders(user_id: str):
+async def get_user_orders(user_id: str, trading_service: TradingService = Depends(get_trading_service)):
     """Get orders for a user"""
-    from ..main import trading_service
     try:
         orders = trading_service.get_user_orders(user_id)
         return orders

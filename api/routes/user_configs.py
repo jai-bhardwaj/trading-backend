@@ -2,16 +2,17 @@
 User Strategy Configs API Routes
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 from ..models import UserStrategyConfig, UpdateUserStrategyConfigRequest
+from ..dependencies import get_trading_service
+from ..services.trading_service import TradingService
 
-router = APIRouter(prefix="/api/user-strategy-configs", tags=["user-configs"])
+router = APIRouter(prefix="/api/user-configs", tags=["user-configs"])
 
 @router.get("/{user_id}", response_model=List[UserStrategyConfig])
-async def get_user_strategy_configs(user_id: str):
+async def get_user_strategy_configs(user_id: str, trading_service: TradingService = Depends(get_trading_service)):
     """Get strategy configs for a user"""
-    from ..main import trading_service
     try:
         configs = trading_service.get_user_strategy_configs(user_id)
         return configs
@@ -19,9 +20,8 @@ async def get_user_strategy_configs(user_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get user strategy configs: {str(e)}")
 
 @router.get("/{user_id}/{strategy_id}", response_model=UserStrategyConfig)
-async def get_user_strategy_config(user_id: str, strategy_id: str):
+async def get_user_strategy_config(user_id: str, strategy_id: str, trading_service: TradingService = Depends(get_trading_service)):
     """Get specific strategy config for a user"""
-    from ..main import trading_service
     try:
         config = trading_service.get_user_strategy_config(user_id, strategy_id)
         if not config:
@@ -36,10 +36,10 @@ async def get_user_strategy_config(user_id: str, strategy_id: str):
 async def update_user_strategy_config(
     user_id: str,
     strategy_id: str,
-    request: UpdateUserStrategyConfigRequest
+    request: UpdateUserStrategyConfigRequest,
+    trading_service: TradingService = Depends(get_trading_service)
 ):
     """Update user strategy config"""
-    from ..main import trading_service
     try:
         updates = {}
         if request.enabled is not None:
