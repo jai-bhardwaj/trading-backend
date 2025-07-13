@@ -171,11 +171,11 @@ class TradingService:
                 "error": str(e)
             }
     
-    def get_user_orders(self, user_id: str) -> List[Dict]:
-        """Get orders for a user"""
+    def get_user_orders(self, user_id: str, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Get orders for a user with pagination"""
         try:
             with get_db_session() as session:
-                orders = session.query(DBOrder).filter_by(userId=user_id).order_by(DBOrder.createdAt.desc()).all()
+                orders = session.query(DBOrder).filter_by(userId=user_id).order_by(DBOrder.createdAt.desc()).limit(limit).offset(offset).all()
                 return [
                     {
                         "id": order.id,
@@ -188,6 +188,10 @@ class TradingService:
                         "price": order.price,
                         "status": order.status,
                         "broker_order_id": order.brokerOrderId,
+                        "filled_quantity": getattr(order, 'filledQuantity', 0),
+                        "filled_price": getattr(order, 'filledPrice', None),
+                        "filled_at": getattr(order, 'filledAt', None),
+                        "timestamp": order.createdAt,
                         "created_at": order.createdAt,
                         "updated_at": order.updatedAt
                     }
@@ -196,6 +200,138 @@ class TradingService:
         except Exception as e:
             logger.error(f"❌ Error getting user orders: {e}")
             return []
+
+    def get_user_orders_with_filters(
+        self, 
+        user_id: str, 
+        limit: int = 50, 
+        offset: int = 0,
+        status: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None
+    ) -> Dict:
+        """Get orders for a user with advanced filtering and pagination"""
+        try:
+            with get_db_session() as session:
+                # Build query with filters
+                query = session.query(DBOrder).filter_by(userId=user_id)
+                
+                if status:
+                    query = query.filter(DBOrder.status == status)
+                
+                if start_date:
+                    query = query.filter(DBOrder.createdAt >= start_date)
+                
+                if end_date:
+                    query = query.filter(DBOrder.createdAt <= end_date)
+                
+                if symbol:
+                    query = query.filter(DBOrder.symbol.ilike(f"%{symbol}%"))
+                
+                # Get total count for pagination
+                total_count = query.count()
+                
+                # Apply pagination and ordering
+                orders = query.order_by(DBOrder.createdAt.desc()).limit(limit).offset(offset).all()
+                
+                orders_data = [
+                    {
+                        "id": order.id,
+                        "user_id": order.userId,
+                        "strategy_id": order.strategyId,
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "order_type": order.orderType,
+                        "quantity": order.quantity,
+                        "price": order.price,
+                        "status": order.status,
+                        "broker_order_id": order.brokerOrderId,
+                        "filled_quantity": getattr(order, 'filledQuantity', 0),
+                        "filled_price": getattr(order, 'filledPrice', None),
+                        "filled_at": getattr(order, 'filledAt', None),
+                        "timestamp": order.createdAt,
+                        "created_at": order.createdAt,
+                        "updated_at": order.updatedAt
+                    }
+                    for order in orders
+                ]
+                
+                return {
+                    "orders": orders_data,
+                    "total": total_count
+                }
+        except Exception as e:
+            logger.error(f"❌ Error getting user orders with filters: {e}")
+            return {"orders": [], "total": 0}
+
+    def get_user_orders_summary(
+        self,
+        user_id: str,
+        status: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        symbol: Optional[str] = None
+    ) -> Dict:
+        """Get summary statistics for user orders with filters"""
+        try:
+            with get_db_session() as session:
+                # Build query with filters (same as get_user_orders_with_filters)
+                query = session.query(DBOrder).filter_by(userId=user_id)
+                
+                if status:
+                    query = query.filter(DBOrder.status == status)
+                
+                if start_date:
+                    query = query.filter(DBOrder.createdAt >= start_date)
+                
+                if end_date:
+                    query = query.filter(DBOrder.createdAt <= end_date)
+                
+                if symbol:
+                    query = query.filter(DBOrder.symbol.ilike(f"%{symbol}%"))
+                
+                # Get all matching orders for summary calculation
+                orders = query.all()
+                
+                # Calculate summary statistics
+                total_orders = len(orders)
+                total_value = sum((order.price or 0) * order.quantity for order in orders)
+                
+                # Count by status
+                status_counts = {}
+                for order in orders:
+                    status_counts[order.status] = status_counts.get(order.status, 0) + 1
+                
+                # Calculate specific counts
+                open_orders = status_counts.get("OPEN", 0)
+                completed_orders = status_counts.get("COMPLETE", 0)
+                cancelled_orders = status_counts.get("CANCELLED", 0)
+                rejected_orders = status_counts.get("REJECTED", 0)
+                pending_orders = status_counts.get("PENDING", 0)
+                
+                return {
+                    "total_orders": total_orders,
+                    "total_value": total_value,
+                    "open_orders": open_orders,
+                    "completed_orders": completed_orders,
+                    "cancelled_orders": cancelled_orders,
+                    "rejected_orders": rejected_orders,
+                    "pending_orders": pending_orders,
+                    "status_breakdown": status_counts
+                }
+        except Exception as e:
+            logger.error(f"❌ Error getting user orders summary: {e}")
+            return {
+                "total_orders": 0,
+                "total_value": 0,
+                "open_orders": 0,
+                "completed_orders": 0,
+                "cancelled_orders": 0,
+                "rejected_orders": 0,
+                "pending_orders": 0,
+                "status_breakdown": {}
+            }
     
     def get_user_positions(self, user_id: str) -> List[Dict]:
         """Get positions for a user"""
