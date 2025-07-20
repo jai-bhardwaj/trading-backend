@@ -463,6 +463,13 @@ class OrderManager:
             if result["status"] == "success":
                 order.status = OrderStatus.PLACED
                 order.broker_order_id = result.get("broker_order_id")
+                
+                # Update filled details if available
+                if "filled_price" in result:
+                    order.filled_price = result["filled_price"]
+                if "filled_quantity" in result:
+                    order.filled_quantity = result["filled_quantity"]
+                
                 logger.info(f"✅ Order {order.order_id} executed successfully")
             else:
                 order.status = OrderStatus.REJECTED
@@ -476,7 +483,10 @@ class OrderManager:
                 "order_id": order.order_id,
                 "status": order.status.value,
                 "broker_order_id": order.broker_order_id,
-                "message": result.get("message", "Order processed")
+                "message": result.get("message", "Order processed"),
+                "filled_price": order.filled_price,
+                "filled_quantity": order.filled_quantity,
+                "market_price": result.get("market_price")
             }
             
         except Exception as e:
@@ -488,15 +498,116 @@ class OrderManager:
             }
     
     async def _execute_paper_order(self, order: Order) -> Dict:
-        """Execute paper trading order (simulated)"""
-        # Simulate order execution
-        await asyncio.sleep(0.1)  # Simulate processing time
-        
-        return {
-            "status": "success",
-            "broker_order_id": f"PAPER_{order.order_id}",
-            "message": "Paper order executed successfully"
-        }
+        """Execute paper trading order with real market data simulation"""
+        try:
+            # Import here to avoid circular imports
+            from strategy.market_data import MarketDataProvider
+            
+            # Initialize market data provider for real prices
+            market_data = MarketDataProvider()
+            await market_data.initialize()
+            
+            # Get real market data for the symbol
+            symbol_data = await market_data.get_ltp_data([order.symbol])
+            
+            if not symbol_data or order.symbol not in symbol_data:
+                logger.warning(f"⚠️ No real market data for {order.symbol}, using fallback simulation")
+                # Fallback to simple simulation
+                await asyncio.sleep(0.1)  # Simulate processing time
+                return {
+                    "status": "success",
+                    "broker_order_id": f"PAPER_{order.order_id}",
+                    "message": "Paper order executed successfully (fallback mode)",
+                    "filled_price": order.price or 1000.0,
+                    "filled_quantity": order.quantity
+                }
+            
+            # Get real market data
+            market_info = symbol_data[order.symbol]
+            current_price = market_info.ltp
+            bid_price = market_info.bid
+            ask_price = market_info.ask
+            
+            logger.info(f"📊 Real market data for {order.symbol}: LTP={current_price}, Bid={bid_price}, Ask={ask_price}")
+            
+            # Simulate order execution based on order type
+            if order.order_type == OrderType.MARKET:
+                # Market orders get filled at current market price
+                filled_price = current_price
+                execution_delay = 0.05  # 50ms for market orders
+                success_probability = 0.95  # 95% success rate for market orders
+                
+            elif order.order_type == OrderType.LIMIT:
+                # Limit orders check if price is favorable
+                if order.side == OrderSide.BUY:
+                    # Buy limit: only execute if current price <= limit price
+                    if current_price <= order.price:
+                        filled_price = min(order.price, current_price)
+                        success_probability = 0.8
+                    else:
+                        # Order would be rejected in real trading
+                        return {
+                            "status": "rejected",
+                            "error": f"Limit price {order.price} above current market price {current_price}",
+                            "message": "Limit order rejected - price not favorable"
+                        }
+                else:  # SELL
+                    # Sell limit: only execute if current price >= limit price
+                    if current_price >= order.price:
+                        filled_price = max(order.price, current_price)
+                        success_probability = 0.8
+                    else:
+                        # Order would be rejected in real trading
+                        return {
+                            "status": "rejected",
+                            "error": f"Limit price {order.price} below current market price {current_price}",
+                            "message": "Limit order rejected - price not favorable"
+                        }
+                execution_delay = 0.1  # 100ms for limit orders
+                
+            else:
+                # Unknown order type
+                return {
+                    "status": "rejected",
+                    "error": f"Unsupported order type: {order.order_type}",
+                    "message": "Order type not supported in paper trading"
+                }
+            
+            # Simulate execution delay
+            await asyncio.sleep(execution_delay)
+            
+            # Simulate success/failure based on probability
+            import random
+            if random.random() > success_probability:
+                return {
+                    "status": "rejected",
+                    "error": "Order rejected due to market conditions",
+                    "message": "Paper order rejected (simulated market conditions)"
+                }
+            
+            # Update order with real execution details
+            order.filled_price = filled_price
+            order.filled_quantity = order.quantity
+            order.status = OrderStatus.FILLED
+            
+            logger.info(f"✅ Paper order {order.order_id} executed: {order.side.value} {order.quantity} {order.symbol} @ {filled_price}")
+            
+            return {
+                "status": "success",
+                "broker_order_id": f"PAPER_{order.order_id}",
+                "message": f"Paper order executed successfully @ {filled_price}",
+                "filled_price": filled_price,
+                "filled_quantity": order.quantity,
+                "market_price": current_price
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in paper order execution: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "message": "Paper order execution failed"
+            }
     
     async def get_order_status(self, order_id: str) -> Optional[Order]:
         """Get order status"""
