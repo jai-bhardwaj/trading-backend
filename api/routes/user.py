@@ -13,8 +13,30 @@ router = APIRouter(prefix="/api/user", tags=["user"])
 async def get_user_dashboard(trading_service: TradingService = Depends(get_trading_service)):
     """Get user dashboard data"""
     try:
-        # For now, return mock data in the format the frontend expects
-        # In a real app, this would be personalized based on the authenticated user
+        # Get all strategies configured for the admin user
+        user_configs = trading_service.get_user_strategy_configs("admin_user_id")
+        
+        # Get all available strategies from marketplace for reference
+        all_strategies = trading_service.get_strategies()
+        strategy_map = {strategy["id"]: strategy for strategy in all_strategies}
+        
+        # Convert user configs to active strategies format
+        active_strategies = []
+        for config in user_configs:
+            if config["enabled"]:
+                strategy_info = strategy_map.get(config["strategy_id"], {})
+                active_strategies.append({
+                    "user_id": "admin",
+                    "strategy_id": config["strategy_id"],
+                    "status": "active",
+                    "activated_at": "2025-07-08T03:11:58.703988",
+                    "allocation_amount": 50000,
+                    "custom_parameters": config.get("order_preferences", {}),
+                    "total_orders": 0,
+                    "successful_orders": 0,
+                    "total_pnl": 0.0
+                })
+        
         dashboard_data = {
             "user_info": {
                 "user_id": "admin",
@@ -23,19 +45,7 @@ async def get_user_dashboard(trading_service: TradingService = Depends(get_tradi
                 "role": "admin",
                 "status": "active"
             },
-            "active_strategies": [
-                {
-                    "user_id": "admin",
-                    "strategy_id": "rsi_dmi",
-                    "status": "active",
-                    "activated_at": "2025-07-08T03:11:58.703988",
-                    "allocation_amount": 50000,
-                    "custom_parameters": {},
-                    "total_orders": 0,
-                    "successful_orders": 0,
-                    "total_pnl": 0.0
-                }
-            ],
+            "active_strategies": active_strategies,
             "recent_orders": [],
             "portfolio_summary": {
                 "total_value": 100000,
@@ -47,7 +57,7 @@ async def get_user_dashboard(trading_service: TradingService = Depends(get_tradi
             "system_status": {
                 "engine_running": True,
                 "total_users": 1,
-                "active_strategies": 1,
+                "active_strategies": len(active_strategies),
                 "total_orders": 0,
                 "memory_usage_mb": 128,
                 "uptime_seconds": 3600
