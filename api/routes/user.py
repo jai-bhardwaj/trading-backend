@@ -9,6 +9,10 @@ from ..services.trading_service import TradingService
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
+# Simple in-memory storage for demo purposes
+# In a real app, this would be in a database
+paused_strategies = set()
+
 @router.get("/dashboard", response_model=Dict)
 async def get_user_dashboard(trading_service: TradingService = Depends(get_trading_service)):
     """Get user dashboard data"""
@@ -25,10 +29,14 @@ async def get_user_dashboard(trading_service: TradingService = Depends(get_tradi
         for config in user_configs:
             if config["enabled"]:
                 strategy_info = strategy_map.get(config["strategy_id"], {})
+                
+                # Check if this strategy is paused
+                strategy_status = "paused" if config["strategy_id"] in paused_strategies else "active"
+                
                 active_strategies.append({
                     "user_id": "admin",
                     "strategy_id": config["strategy_id"],
-                    "status": "active",
+                    "status": strategy_status,
                     "activated_at": "2025-07-08T03:11:58.703988",
                     "allocation_amount": 50000,
                     "custom_parameters": config.get("order_preferences", {}),
@@ -114,4 +122,58 @@ async def deactivate_strategy(
         }
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to deactivate strategy: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to deactivate strategy: {str(e)}")
+
+@router.post("/pause/{strategy_id}", response_model=Dict)
+async def pause_strategy(
+    strategy_id: str,
+    trading_service: TradingService = Depends(get_trading_service)
+):
+    """Pause a strategy for the user (keeps it activated but stops execution)"""
+    try:
+        # Add to paused strategies set
+        paused_strategies.add(strategy_id)
+        
+        # For now, return success response
+        # In a real app, this would actually pause the strategy
+        result = {
+            "user_id": "admin",
+            "strategy_id": strategy_id,
+            "status": "paused",
+            "activated_at": "2025-07-08T03:11:58.703988",  # Keep the activation time
+            "allocation_amount": 50000,  # Keep the allocation
+            "custom_parameters": {},
+            "total_orders": 0,
+            "successful_orders": 0,
+            "total_pnl": 0.0
+        }
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to pause strategy: {str(e)}")
+
+@router.post("/resume/{strategy_id}", response_model=Dict)
+async def resume_strategy(
+    strategy_id: str,
+    trading_service: TradingService = Depends(get_trading_service)
+):
+    """Resume a paused strategy for the user"""
+    try:
+        # Remove from paused strategies set
+        paused_strategies.discard(strategy_id)
+        
+        # For now, return success response
+        # In a real app, this would actually resume the strategy
+        result = {
+            "user_id": "admin",
+            "strategy_id": strategy_id,
+            "status": "active",
+            "activated_at": "2025-07-08T03:11:58.703988",
+            "allocation_amount": 50000,
+            "custom_parameters": {},
+            "total_orders": 0,
+            "successful_orders": 0,
+            "total_pnl": 0.0
+        }
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resume strategy: {str(e)}") 
