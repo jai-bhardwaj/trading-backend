@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from SmartApi import SmartConnect
+from smartapi import SmartConnect
 from strategy.AngelWebSocket import SmartWebSocketV2  # Use V2 as per official docs
 from dotenv import load_dotenv
 import json

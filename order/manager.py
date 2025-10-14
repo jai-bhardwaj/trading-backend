@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
-from SmartApi import SmartConnect
+from smartapi import SmartConnect
 import pyotp
 import os
 from dotenv import load_dotenv
@@ -501,16 +501,19 @@ class OrderManager:
         """Execute paper trading order with real market data simulation"""
         try:
             # Import here to avoid circular imports
-            from strategy.market_data import MarketDataProvider
+            from shared.nats_client import create_nats_consumer
             
-            # Initialize market data provider for real prices
-            market_data = MarketDataProvider()
-            await market_data.initialize()
+            # Initialize NATS consumer for real prices
+            nats_consumer = create_nats_consumer("oms")
+            await nats_consumer.connect()
             
-            # Get real market data for the symbol
-            symbol_data = await market_data.get_ltp_data([order.symbol])
+            # Get real market data for the symbol from NATS
+            tick = await nats_consumer.get_latest_tick(order.symbol)
             
-            if not symbol_data or order.symbol not in symbol_data:
+            # Close NATS connection
+            await nats_consumer.disconnect()
+            
+            if not tick:
                 logger.warning(f"⚠️ No real market data for {order.symbol}, using fallback simulation")
                 # Fallback to simple simulation
                 await asyncio.sleep(0.1)  # Simulate processing time
@@ -522,11 +525,10 @@ class OrderManager:
                     "filled_quantity": order.quantity
                 }
             
-            # Get real market data
-            market_info = symbol_data[order.symbol]
-            current_price = market_info.ltp
-            bid_price = market_info.bid
-            ask_price = market_info.ask
+            # Get real market data from tick
+            current_price = tick.ltp
+            bid_price = tick.bid
+            ask_price = tick.ask
             
             logger.info(f"📊 Real market data for {order.symbol}: LTP={current_price}, Bid={bid_price}, Ask={ask_price}")
             

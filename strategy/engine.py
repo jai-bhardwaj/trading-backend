@@ -10,10 +10,10 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import asdict
-from strategy.market_data import MarketDataProvider
 from strategy.registry import register_strategies_to_registry, get_strategy_class
 from shared.config import ConfigLoader
 from shared.market_hours import market_hours
+from shared.nats_client import create_nats_consumer, MarketDataTick
 import threading
 
 logger = logging.getLogger(__name__)
@@ -24,14 +24,14 @@ class StrategyEngine:
     def __init__(self, redis_url: str = "redis://localhost:6379/2"):
         self.redis_url = redis_url
         self.redis_client = None
-        self.market_data_provider = MarketDataProvider()
+        self.nats_consumer = create_nats_consumer("strategy-engine")
         self.strategies = {}  # strategy_id -> strategy instance
         self.running = False
         self.config_loader = ConfigLoader()
-        self.live_market_data = {}  # token -> tick data
-        self._market_data_lock = threading.Lock()
-        self._ws_thread = None
+        self.live_market_data = {}  # symbol -> MarketDataTick
+        self._market_data_lock = asyncio.Lock()
         self.strategy_stats = {}  # Track strategy performance
+        self.market_data_provider = None  # Initialize market data provider
     
     async def initialize(self):
         try:
@@ -40,9 +40,12 @@ class StrategyEngine:
             await self.redis_client.ping()
             logger.info("✅ Redis connected")
             
-            # Initialize market data provider
-            await self.market_data_provider.initialize()
-            logger.info("✅ Market data provider initialized")
+            # Connect to NATS
+            await self.nats_consumer.connect()
+            logger.info("✅ NATS connected")
+            
+            # Add tick handler
+            self.nats_consumer.add_tick_handler(self._handle_market_tick)
             
             # Load configurations
             self.config_loader.load_symbols()
@@ -57,14 +60,13 @@ class StrategyEngine:
             await self._load_strategies_from_config()
             logger.info("✅ Strategy engine initialized")
 
-            # Start WebSocket for live market data
-            all_tokens = self._collect_all_tokens()
-            if all_tokens:
-                logger.info(f"🚀 Starting WebSocket stream for {len(all_tokens)} tokens")
-                self._ws_thread = threading.Thread(target=self._start_ws_stream, args=(all_tokens,), daemon=True)
-                self._ws_thread.start()
+            # Subscribe to market data via NATS
+            all_symbols = self._collect_all_symbols()
+            if all_symbols:
+                logger.info(f"🚀 Subscribing to NATS for {len(all_symbols)} symbols: {all_symbols}")
+                await self.nats_consumer.subscribe(all_symbols)
             else:
-                logger.warning("⚠️ No tokens to subscribe to - no strategies loaded or no symbols configured")
+                logger.warning("⚠️ No symbols to subscribe to - no strategies loaded or no symbols configured")
         except Exception as e:
             logger.error(f"❌ Failed to initialize strategy engine: {e}")
             raise
@@ -110,89 +112,42 @@ class StrategyEngine:
         except Exception as e:
             logger.error(f"❌ Error publishing signal: {e}")
     
-    def _collect_all_tokens(self):
-        """Collect all unique tokens needed by all strategies"""
-        tokens = set()
+    def _collect_all_symbols(self):
+        """Collect all unique symbols needed by all strategies"""
+        symbols = set()
         for strategy in self.strategies.values():
             for symbol in strategy.symbols:
-                token = self.market_data_provider._get_symbol_token(symbol)
-                if token:
-                    tokens.add(token)
-        return list(tokens)
-
-    def _start_ws_stream(self, tokens):
-        logger.info(f"[WS] Strategy engine: Starting WebSocket stream with {len(tokens)} tokens")
-        logger.info(f"[WS] Strategy engine: Tokens: {tokens}")
-        
-        def on_tick(tick):
-            logger.info(f"[WS] Strategy engine: Received tick(s): {tick}")
-            with self._market_data_lock:
-                # Handle both single tick dict and list of ticks
-                if isinstance(tick, list):
-                    ticks_to_process = tick
-                elif isinstance(tick, dict):
-                    ticks_to_process = [tick]
-                else:
-                    logger.warning(f"[WS] Strategy engine: Unexpected tick format: {type(tick)}")
-                    return
-                
-                for t in ticks_to_process:
-                    token = t.get("token")
-                    if token:
-                        # Convert WebSocket data to MarketData format
-                        from strategy.market_data import MarketData
-                        from datetime import datetime
-                        
-                        # Extract LTP from the WebSocket data structure
-                        ltp = float(t.get("ltp", 0))  # LTP is already in rupees, not paise
-                        
-                        market_data = MarketData(
-                            symbol=t.get("symbol", ""),
-                            ltp=ltp,
-                            change=0.0,
-                            change_percent=0.0,
-                            high=0.0,  # Not available in LTP mode
-                            low=0.0,   # Not available in LTP mode
-                            volume=0,   # Not available in LTP mode
-                            bid=0.0,
-                            ask=0.0,
-                            timestamp=datetime.now()
-                        )
-                        self.live_market_data[token] = market_data
-                        logger.info(f"[WS] Strategy engine: Stored tick for token {token} ({t.get('symbol', 'Unknown')}) @ {market_data.ltp}")
-                        
+                symbols.add(symbol)
+        return list(symbols)
+    
+    async def _handle_market_tick(self, tick: MarketDataTick):
+        """Handle incoming market tick from NATS"""
         try:
-            logger.info("[WS] Strategy engine: Calling market_data_provider.start_websocket_stream...")
-            self.market_data_provider.start_websocket_stream(tokens, on_tick)
-            logger.info("[WS] Strategy engine: WebSocket stream started successfully")
+            async with self._market_data_lock:
+                self.live_market_data[tick.symbol] = tick
+                
+            # Log every 100th tick
+            total_ticks = len(self.live_market_data)
+            if total_ticks % 100 == 0:
+                logger.info(f"📊 Received tick for {tick.symbol} @ {tick.ltp} (Total symbols: {total_ticks})")
         except Exception as e:
-            logger.error(f"[WS] Strategy engine: Error starting WebSocket stream: {e}")
-            import traceback
-            logger.error(f"[WS] Strategy engine: Traceback: {traceback.format_exc()}")
-            raise
+            logger.error(f"Error handling market tick: {e}")
+
 
     async def _get_market_data_for_symbols(self, symbols):
-        """Return a dict: symbol -> latest market data (WebSocket + LTP fallback)"""
+        """Return a dict: symbol -> latest market data from NATS"""
         symbol_data = {}
         
-        # First try to get data from WebSocket
-        with self._market_data_lock:
+        # Get data from NATS live market data
+        async with self._market_data_lock:
             for symbol in symbols:
-                token = self.market_data_provider._get_symbol_token(symbol)
-                if token and token in self.live_market_data:
-                    symbol_data[symbol] = self.live_market_data[token]
+                if symbol in self.live_market_data:
+                    tick = self.live_market_data[symbol]
+                    # Convert MarketDataTick to compatible format
+                    symbol_data[symbol] = tick
         
-        # If WebSocket data is not available, check if market is open before getting LTP data
         if not symbol_data:
-            market_status = market_hours.get_market_status()
-            if market_status["is_open"]:
-                try:
-                    logger.debug("📊 Market open but no WebSocket data - fetching LTP data for symbols...")
-                    symbol_data = await self.market_data_provider.get_ltp_data(symbols)
-                except Exception as e:
-                    logger.error(f"❌ Error getting LTP data: {e}")
-            else:
-                logger.debug("📊 Market closed - skipping LTP data fetch to reduce API calls")
+            logger.debug(f"📊 No live data available for symbols: {symbols}")
         
         return symbol_data
 

@@ -1,0 +1,214 @@
+version: '3.8'
+
+services:
+  # Redis service for caching
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading-network
+
+  # NATS service for pub/sub messaging
+  nats:
+    image: nats:2.10-alpine
+    container_name: trading-nats
+    ports:
+      - "4222:4222"  # Client connections
+      - "8222:8222"  # HTTP monitoring
+      - "6222:6222"  # Cluster connections
+    command: 
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading-network
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-postgres
+    environment:
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: trading_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading-network
+
+  # Trading Backend API
+  trading-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Database Configuration
+      DATABASE_URL: postgresql+psycopg2://trading_user:trading_password@postgres:5432/trading_db
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379/2
+      
+      # Trading Configuration
+      PAPER_TRADING: "true"
+      STRATEGY_EXECUTION_INTERVAL: "5"
+      
+      # Market Hours Configuration
+      MARKET_HOURS_ALWAYS_OPEN: "false"
+      MARKET_HOURS_TEST_MODE: "false"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+      
+      # Angel One API Credentials (set these in .env file)
+      ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
+      ANGEL_ONE_CLIENT_CODE: ${ANGEL_ONE_CLIENT_CODE:-your_client_code_here}
+      ANGEL_ONE_PASSWORD: ${ANGEL_ONE_PASSWORD:-your_password_here}
+      ANGEL_ONE_TOTP_SECRET: ${ANGEL_ONE_TOTP_SECRET:-your_totp_secret_here}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Market Data Service
+  market-data-service:
+    build:
+      context: .
+      dockerfile: market-data-service/Dockerfile
+    container_name: market-data-service
+    ports:
+      - "8001:8001"
+    environment:
+      # Database Configuration
+      DATABASE_URL: postgresql+psycopg2://trading_user:trading_password@postgres:5432/trading_db
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379/2
+      
+      # NATS Configuration
+      NATS_URL: nats://nats:4222
+      
+      # Market Hours Configuration
+      MARKET_HOURS_ALWAYS_OPEN: "false"
+      MARKET_HOURS_TEST_MODE: "false"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+      
+      # Angel One API Credentials (set these in .env file)
+      ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
+      ANGEL_ONE_CLIENT_CODE: ${ANGEL_ONE_CLIENT_CODE:-your_client_code_here}
+      ANGEL_ONE_PASSWORD: ${ANGEL_ONE_PASSWORD:-your_password_here}
+      ANGEL_ONE_TOTP_SECRET: ${ANGEL_ONE_TOTP_SECRET:-your_totp_secret_here}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Trading Engine (Strategy Engine + Order Manager)
+  trading-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading-engine
+    environment:
+      # Database Configuration
+      DATABASE_URL: postgresql+psycopg2://trading_user:trading_password@postgres:5432/trading_db
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379/2
+      
+      # NATS Configuration
+      NATS_URL: nats://nats:4222
+      
+      # Trading Configuration
+      PAPER_TRADING: "true"
+      STRATEGY_EXECUTION_INTERVAL: "5"
+      
+      # Market Hours Configuration
+      MARKET_HOURS_ALWAYS_OPEN: "false"
+      MARKET_HOURS_TEST_MODE: "false"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+      
+      # Angel One API Credentials (set these in .env file)
+      ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
+      ANGEL_ONE_CLIENT_CODE: ${ANGEL_ONE_CLIENT_CODE:-your_client_code_here}
+      ANGEL_ONE_PASSWORD: ${ANGEL_ONE_PASSWORD:-your_password_here}
+      ANGEL_ONE_TOTP_SECRET: ${ANGEL_ONE_TOTP_SECRET:-your_totp_secret_here}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      market-data-service:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    command: ["python", "main.py"]
+
+volumes:
+  redis_data:
+  postgres_data:
+  nats_data:
+
+networks:
+  trading-network:
+    driver: bridge
