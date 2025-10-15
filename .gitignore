@@ -209,3 +209,6 @@ scripts/setup_service.py
 scripts/monitor_service.py
 .cache/
 cache/
+
+# Market data service secrets
+market-data-service/config.py

@@ -1,32 +1,28 @@
 """
-Market Data Service - Standalone service for streaming market data via NATS
-Subscribes to Angel One WebSocket and publishes ticks to NATS
+Market Data Redis Streamer - Clean implementation using AngelOneWebSocketClient
+Streams real-time market data from Angel One to Redis Streams
 """
 
 import asyncio
 import logging
 import os
 import sys
-import json
 import csv
+import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict, Optional
+from typing import List, Dict
 from datetime import datetime
 from dotenv import load_dotenv
-import nats
-from nats.js.api import StreamConfig, RetentionPolicy
-from dataclasses import dataclass
+import redis.asyncio as redis
 
-# Add parent directory to path to access shared modules
+# Add parent directory to path
 sys.path.insert(0, '/app')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import only what we need directly
-from smartapi import SmartConnect
-from strategy.AngelWebSocket import SmartWebSocketV2
-import pyotp
+# Import our Angel One client
+from angel_one_client import AngelOneWebSocketClient
 
 load_dotenv()
 
@@ -37,29 +33,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# NATS configuration
-NATS_URL = os.getenv("NATS_URL", "nats://nats:4222")
-MARKET_DATA_STREAM = "MARKET_DATA"
-MARKET_DATA_SUBJECT = "market.data.tick"
+# Redis configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://trading-redis:6379")
+MARKET_DATA_STREAM = "market_data_stream"
 
 # Global instances
 market_data_streamer = None
-
-@dataclass
-class MarketDataTick:
-    """Market data tick structure"""
-    symbol: str
-    token: str
-    ltp: float
-    change: float
-    change_percent: float
-    high: float
-    low: float
-    volume: int
-    bid: float
-    ask: float
-    timestamp: str
-    exchange_timestamp: str
 
 def load_symbols_from_csv():
     """Load symbols from symbols_to_trade.csv"""
@@ -79,209 +58,229 @@ def load_symbols_from_csv():
         logger.error(f"Error loading symbols from CSV: {e}")
         return []
 
-class MarketDataStreamer:
-    """Streams market data from Angel One to NATS"""
+class MarketDataRedisStreamer:
+    """Streams market data from Angel One to Redis Streams"""
     
     def __init__(self):
-        self.api_key = os.getenv("ANGEL_ONE_API_KEY")
-        self.client_code = os.getenv("ANGEL_ONE_CLIENT_CODE")
-        self.password = os.getenv("ANGEL_ONE_PASSWORD")
-        self.totp_secret = os.getenv("ANGEL_ONE_TOTP_SECRET")
-        
-        # Check if credentials are properly configured
-        self.has_credentials = all([self.api_key, self.client_code, self.password, self.totp_secret]) and \
-                              self.api_key != "your_api_key_here"
-        
-        self.smart_api = None
-        self.session = None
-        self.nats_client = None
-        self.jetstream = None
+        self.redis_client = None
         self.symbols = []
         self.running = False
         self.ws_connected = False
         self.tick_count = 0
         self.last_tick_time = None
         
-        # Symbol-token mapping (simplified for now)
+        # Angel One WebSocket client
+        self.angel_client = None
+        
+        # Event loop reference for scheduling async tasks from sync context
+        self.event_loop = None
+        
+        # Symbol-token mapping
         self.symbol_tokens = {
             "RELIANCE": "2881",
             "TCS": "11536", 
-            "INFY": "408065"
+            "INFY": "408065",
+            "HDFC": "1333",
+            "ICICIBANK": "4963",
+            "SBIN": "3045",
+            "BHARTIARTL": "2714625",
+            "ITC": "424",
+            "KOTAKBANK": "4920",
+            "LT": "11483",
+            "MARUTI": "10999",
+            "ASIANPAINT": "1660",
+            "NESTLEIND": "459",
+            "BAJFINANCE": "81153",
+            "HINDUNILVR": "1394"
         }
     
-    async def initialize(self):
-        """Initialize the streamer"""
+    async def _initialize_angel_one(self):
+        """Initialize Angel One WebSocket client"""
         try:
-            # Load symbols
+            logger.info("🔐 Initializing Angel One WebSocket client...")
+            
+            # Create Angel One client instance
+            self.angel_client = AngelOneWebSocketClient()
+            
+            # Set up callbacks
+            self.angel_client.set_callbacks(
+                on_data=self._handle_tick_data,
+                on_error=self._handle_websocket_error,
+                on_close=self._handle_websocket_close,
+                on_open=self._handle_websocket_open
+            )
+            
+            logger.info("✅ Angel One WebSocket client initialized")
+                
+        except Exception as e:
+            logger.error(f"Error initializing Angel One client: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    
+    async def start(self):
+        """Start the market data streamer"""
+        try:
+            logger.info("🚀 Starting Market Data Service...")
+            
+            # Store the current event loop for later use
+            self.event_loop = asyncio.get_running_loop()
+            
+            # Load symbols from CSV
             self.symbols = load_symbols_from_csv()
             if not self.symbols:
                 logger.warning("No symbols loaded from CSV. Using defaults.")
                 self.symbols = ["RELIANCE", "TCS", "INFY"]
             
-            # Initialize NATS connection
-            logger.info(f"Connecting to NATS at {NATS_URL}...")
-            self.nats_client = await nats.connect(NATS_URL)
-            logger.info("✅ NATS connected")
+            # Connect to Redis
+            logger.info(f"Connecting to Redis at {REDIS_URL}...")
+            self.redis_client = redis.from_url(REDIS_URL)
+            await self.redis_client.ping()
+            logger.info("✅ Redis connected")
             
-            # Initialize JetStream
-            self.jetstream = self.nats_client.jetstream()
+            # Initialize Angel One client
+            await self._initialize_angel_one()
             
-            # Create or update stream
-            try:
-                await self.jetstream.add_stream(
-                    name=MARKET_DATA_STREAM,
-                    subjects=[f"{MARKET_DATA_SUBJECT}.>"],
-                    retention=RetentionPolicy.LIMITS,
-                    max_age=300,  # Keep messages for 5 minutes
-                    max_msgs=1000000,
-                    max_bytes=1024*1024*1024,  # 1GB
-                    storage=nats.js.api.StorageType.MEMORY,
-                )
-                logger.info("✅ NATS JetStream configured")
-            except Exception as e:
-                logger.warning(f"Stream might already exist: {e}")
+            # Start WebSocket stream
+            self.start_websocket_stream()
             
-            # Initialize Angel One API if credentials available
-            if self.has_credentials:
-                await self._initialize_angel_one()
-                # Start WebSocket streaming
-                self.start_websocket_stream()
-            else:
-                logger.warning("⚠️ Angel One API credentials not configured. Using mock data mode.")
-                # Start mock data streaming
-                asyncio.create_task(self._mock_data_streamer())
+            # Set running flag
+            self.running = True
             
-            logger.info("✅ Market data streamer initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize market data streamer: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-    
-    async def _initialize_angel_one(self):
-        """Initialize Angel One API connection"""
-        try:
-            self.smart_api = SmartConnect(self.api_key)
-            
-            # Generate TOTP
-            totp = pyotp.TOTP(self.totp_secret)
-            totp_code = totp.now()
-            
-            # Login
-            self.session = self.smart_api.generateSession(
-                self.client_code, 
-                self.password, 
-                totp_code
-            )
-            
-            if self.session:
-                logger.info("✅ Angel One API authenticated successfully")
-            else:
-                logger.error("❌ Angel One API authentication failed")
+            logger.info("✅ Market Data Service started successfully")
                 
         except Exception as e:
-            logger.error(f"Error initializing Angel One API: {e}")
+            logger.error(f"❌ Failed to start Market Data Service: {e}")
+            self.running = False
+            raise
     
     def start_websocket_stream(self):
         """Start Angel One WebSocket stream"""
         try:
-            # Get all tokens for symbols
+            # Get tokens for symbols
             tokens = []
+            nse_tokens = []
+            
             for symbol in self.symbols:
                 token = self.symbol_tokens.get(symbol)
                 if token:
-                    tokens.append(token)
+                    nse_tokens.append(token)
+            
+            # Create token list in the format expected by Angel One
+            if nse_tokens:
+                tokens.append({
+                    "exchangeType": 1,  # NSE CM (Cash Market)
+                    "tokens": nse_tokens
+                })
             
             if not tokens:
                 logger.warning("No valid tokens found for symbols")
                 return
             
-            logger.info(f"Starting WebSocket stream for {len(tokens)} tokens...")
+            logger.info(f"Starting WebSocket stream for {len(tokens)} token groups...")
             
-            # Define tick handler
-            def on_tick(tick):
-                """Handle incoming tick data from Angel One WebSocket"""
-                try:
-                    # Publish tick to NATS asynchronously
-                    asyncio.create_task(self.publish_tick(tick))
-                except Exception as e:
-                    logger.error(f"Error in tick handler: {e}")
+            # Connect using the Angel One client
+            success = self.angel_client.connect(tokens)
             
-            # Start WebSocket stream
-            sws = SmartWebSocketV2(self.session, self.client_code)
-            sws.start_websocket(on_tick)
-            self.ws_connected = True
-            logger.info("✅ WebSocket stream started")
+            if success:
+                self.ws_connected = True
+                logger.info("✅ WebSocket stream started")
+            else:
+                logger.error("❌ Failed to start WebSocket stream")
             
         except Exception as e:
             logger.error(f"Error starting WebSocket stream: {e}")
             import traceback
             logger.error(traceback.format_exc())
     
-    async def _mock_data_streamer(self):
-        """Mock data streamer for testing without API credentials"""
-        logger.info("Starting mock data streamer...")
-        
-        while self.running:
-            try:
-                for symbol in self.symbols:
-                    # Generate mock tick data
-                    mock_tick = {
-                        "symbol": symbol,
-                        "token": self.symbol_tokens.get(symbol, "0"),
-                        "ltp": 1000.0 + (hash(symbol) % 1000),
-                        "change": (hash(symbol) % 100) - 50,
-                        "change_percent": ((hash(symbol) % 100) - 50) / 100,
-                        "high": 1100.0,
-                        "low": 900.0,
-                        "volume": hash(symbol) % 10000,
-                        "bid": 999.0,
-                        "ask": 1001.0,
-                        "timestamp": datetime.now().isoformat(),
-                        "exchange_timestamp": datetime.now().isoformat()
-                    }
-                    
-                    await self.publish_tick(mock_tick)
-                
-                # Wait 1 second before next update
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"Error in mock data streamer: {e}")
-                await asyncio.sleep(5)
-    
-    async def publish_tick(self, tick: Dict):
-        """Publish tick data to NATS"""
+    def _handle_tick_data(self, wsapp, msg):
+        """Handle incoming tick data from Angel One WebSocket"""
         try:
-            if not self.jetstream:
+            logger.info(f"Received tick: {msg}")
+            
+            # Process tick data and publish to Redis
+            if self.event_loop and not self.event_loop.is_closed():
+                # Schedule the coroutine to run in the stored event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self.process_and_publish_tick(msg), 
+                    self.event_loop
+                )
+                logger.debug(f"Scheduled tick processing task: {future}")
+            else:
+                logger.error("No valid event loop available for scheduling tick processing")
+            
+        except Exception as e:
+            logger.error(f"Error in tick handler: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def _handle_websocket_error(self, wsapp, error):
+        """Handle WebSocket errors"""
+        logger.error(f"WebSocket error: {error}")
+    
+    def _handle_websocket_close(self, wsapp, *args):
+        """Handle WebSocket connection close"""
+        logger.warning("WebSocket connection closed")
+        self.ws_connected = False
+    
+    def _handle_websocket_open(self, wsapp):
+        """Handle WebSocket connection open"""
+        logger.info("✅ WebSocket connection opened")
+        self.ws_connected = True
+    
+    async def process_and_publish_tick(self, tick_data: Dict):
+        """Process tick data and publish to Redis Stream"""
+        try:
+            if not self.redis_client:
                 return
             
-            # Extract symbol from tick
-            symbol = tick.get('symbol', 'UNKNOWN')
+            # Extract data from Angel One tick format
+            token = tick_data.get('token', '')
+            ltp = tick_data.get('last_traded_price', 0) / 100  # Angel One sends price * 100
+            volume = tick_data.get('volume_trade_for_the_day', 0)
+            high = tick_data.get('high_price_of_the_day', 0) / 100
+            low = tick_data.get('low_price_of_the_day', 0) / 100
+            open_price = tick_data.get('open_price_of_the_day', 0) / 100
+            close_price = tick_data.get('closed_price', 0) / 100
+            
+            # Calculate change
+            change = ltp - close_price if close_price > 0 else 0
+            change_percent = (change / close_price * 100) if close_price > 0 else 0
+            
+            # Get best bid/ask from order book
+            best_buy_data = tick_data.get('best_5_buy_data', [])
+            best_sell_data = tick_data.get('best_5_sell_data', [])
+            
+            bid = best_buy_data[0]['price'] / 100 if best_buy_data else ltp
+            ask = best_sell_data[0]['price'] / 100 if best_sell_data else ltp
+            
+            # Find symbol from token
+            symbol = self._get_symbol_from_token(token)
             
             # Create tick message
             tick_message = {
                 "symbol": symbol,
-                "token": tick.get('token', ''),
-                "ltp": tick.get('ltp', 0),
-                "change": tick.get('change', 0),
-                "change_percent": tick.get('change_percent', 0),
-                "high": tick.get('high', 0),
-                "low": tick.get('low', 0),
-                "volume": tick.get('volume', 0),
-                "bid": tick.get('bid', 0),
-                "ask": tick.get('ask', 0),
-                "timestamp": tick.get('timestamp', datetime.now().isoformat()),
-                "exchange_timestamp": tick.get('exchange_timestamp', '')
+                "token": token,
+                "ltp": ltp,
+                "change": change,
+                "change_percent": change_percent,
+                "high": high,
+                "low": low,
+                "volume": volume,
+                "bid": bid,
+                "ask": ask,
+                "open": open_price,
+                "close": close_price,
+                "timestamp": datetime.now().isoformat(),
+                "exchange_timestamp": datetime.fromtimestamp(tick_data.get('exchange_timestamp', 0) / 1000).isoformat() if tick_data.get('exchange_timestamp') else datetime.now().isoformat()
             }
             
-            # Publish to NATS JetStream
-            subject = f"{MARKET_DATA_SUBJECT}.{symbol}"
-            await self.jetstream.publish(
-                subject,
-                json.dumps(tick_message).encode()
+            # Publish to Redis Stream
+            stream_key = f"{MARKET_DATA_STREAM}:{symbol}"
+            await self.redis_client.xadd(
+                stream_key,
+                tick_message,
+                maxlen=1000  # Keep last 1000 messages per symbol
             )
             
             # Update stats
@@ -289,10 +288,17 @@ class MarketDataStreamer:
             self.last_tick_time = datetime.now()
             
             if self.tick_count % 100 == 0:
-                logger.info(f"📊 Published {self.tick_count} ticks to NATS")
+                logger.info(f"📊 Published {self.tick_count} ticks to Redis")
             
         except Exception as e:
-            logger.error(f"Error publishing tick to NATS: {e}")
+            logger.error(f"Error processing and publishing tick: {e}")
+    
+    def _get_symbol_from_token(self, token: str) -> str:
+        """Get symbol name from token"""
+        for symbol, token_val in self.symbol_tokens.items():
+            if token_val == token:
+                return symbol
+        return f"TOKEN_{token}"  # Fallback if symbol not found
     
     async def close(self):
         """Close the streamer"""
@@ -300,10 +306,14 @@ class MarketDataStreamer:
             self.running = False
             self.ws_connected = False
             
-            if self.nats_client:
-                await self.nats_client.close()
+            # Close WebSocket connection using the Angel One client
+            if self.angel_client:
+                self.angel_client.disconnect()
             
-            logger.info("✅ Market data streamer closed")
+            if self.redis_client:
+                await self.redis_client.close()
+            
+            logger.info("✅ Market data Redis streamer closed")
         except Exception as e:
             logger.error(f"Error closing streamer: {e}")
     
@@ -316,47 +326,75 @@ class MarketDataStreamer:
             "tick_count": self.tick_count,
             "last_tick_time": self.last_tick_time.isoformat() if self.last_tick_time else None,
             "running": self.running,
-            "has_credentials": self.has_credentials
+            "has_credentials": True,
+            "redis_connected": self.redis_client is not None
         }
+    
+    async def subscribe_to_symbols(self, symbols: List[str]) -> bool:
+        """Subscribe to additional symbols"""
+        try:
+            if not self.angel_client or not self.ws_connected:
+                logger.error("❌ Cannot subscribe - not connected")
+                return False
+            
+            # Get tokens for new symbols
+            new_tokens = []
+            for symbol in symbols:
+                token = self.symbol_tokens.get(symbol)
+                if token:
+                    new_tokens.append(token)
+            
+            if not new_tokens:
+                logger.warning("No valid tokens found for new symbols")
+                return False
+            
+            # Add to existing symbols
+            self.symbols.extend(symbols)
+            
+            # Subscribe to new tokens
+            token_group = [{
+                "exchangeType": 1,  # NSE CM
+                "tokens": new_tokens
+            }]
+            
+            success = self.angel_client.subscribe(token_group)
+            if success:
+                logger.info(f"✅ Subscribed to {len(symbols)} new symbols: {symbols}")
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error subscribing to symbols: {e}")
+            return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
+    """Manage the lifespan of the FastAPI application"""
     global market_data_streamer
     
     # Startup
-    logger.info("🚀 Starting Market Data Service...")
     try:
-        market_data_streamer = MarketDataStreamer()
-        success = await market_data_streamer.initialize()
-        
-        if not success:
-            logger.error("❌ Failed to initialize market data streamer")
-        else:
-            logger.info("✅ Market Data Service started successfully")
-        
+        logger.info("🚀 Starting market data streamer...")
+        market_data_streamer = MarketDataRedisStreamer()
+        await market_data_streamer.start()
+        logger.info("✅ Market data streamer started successfully")
     except Exception as e:
-        logger.error(f"❌ Failed to start market data service: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Failed to start market data streamer: {e}")
     
     yield
     
     # Shutdown
-    logger.info("🛑 Shutting down Market Data Service...")
     if market_data_streamer:
         try:
             await market_data_streamer.close()
+            logger.info("✅ Market data streamer stopped")
         except Exception as e:
-            logger.error(f"❌ Error during shutdown: {e}")
-    
-    logger.info("✅ Market Data Service shutdown complete")
+            logger.error(f"❌ Error stopping market data streamer: {e}")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Market Data Service",
-    description="Streams market data from Angel One to NATS",
-    version="1.0.0",
+    title="Market Data Redis Streamer",
+    description="Streams market data from Angel One to Redis Streams",
+    version="4.0.0",
     lifespan=lifespan
 )
 
@@ -373,11 +411,12 @@ app.add_middleware(
 async def root():
     """Root endpoint"""
     return {
-        "service": "Market Data Service",
-        "version": "1.0.0",
+        "service": "Market Data Redis Streamer",
+        "version": "4.0.0",
         "status": "running",
-        "nats_url": NATS_URL,
-        "stream": MARKET_DATA_STREAM
+        "redis_url": REDIS_URL,
+        "stream": MARKET_DATA_STREAM,
+        "implementation": "AngelOneWebSocketClient + Redis Streams"
     }
 
 @app.get("/health")
@@ -395,7 +434,7 @@ async def health_check():
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "nats_connected": market_data_streamer.nats_client is not None,
+            "redis_connected": stats["redis_connected"],
             "ws_connected": stats["ws_connected"],
             "symbols_tracked": stats["symbols_tracked"],
             "tick_count": stats["tick_count"],
@@ -431,10 +470,33 @@ async def get_symbols():
         
         return {
             "symbols": market_data_streamer.symbols,
-            "count": len(market_data_streamer.symbols)
+            "count": len(market_data_streamer.symbols),
+            "symbol_tokens": market_data_streamer.symbol_tokens
         }
     except Exception as e:
         logger.error(f"Error getting symbols: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/subscribe")
+async def subscribe_symbols(symbols: List[str]):
+    """Subscribe to additional symbols"""
+    try:
+        if not market_data_streamer:
+            raise HTTPException(status_code=503, detail="Streamer not initialized")
+        
+        success = await market_data_streamer.subscribe_to_symbols(symbols)
+        
+        if success:
+            return {
+                "message": f"Successfully subscribed to {len(symbols)} symbols",
+                "symbols": symbols,
+                "total_symbols": len(market_data_streamer.symbols)
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Failed to subscribe to symbols")
+            
+    except Exception as e:
+        logger.error(f"Error subscribing to symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

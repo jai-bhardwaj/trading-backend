@@ -19,11 +19,8 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy parent directory files (for shared modules)
-COPY ../ /app/
-
 # Copy service-specific files
-COPY main.py /app/market-data-service/main.py
+COPY . /app/market-data-service/
 
 # Create necessary directories
 RUN mkdir -p /app/data /app/logs

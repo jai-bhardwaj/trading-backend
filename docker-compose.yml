@@ -107,9 +107,7 @@ services:
 
   # Market Data Service
   market-data-service:
-    build:
-      context: .
-      dockerfile: market-data-service/Dockerfile
+    image: test-market-data-service
     container_name: market-data-service
     ports:
       - "8001:8001"
@@ -202,7 +200,7 @@ services:
     networks:
       - trading-network
     restart: unless-stopped
-    command: ["python", "main.py"]
+    command: ["python", "/app/market-data-service/main.py"]
 
 volumes:
   redis_data:
