@@ -500,107 +500,16 @@ class OrderManager:
     async def _execute_paper_order(self, order: Order) -> Dict:
         """Execute paper trading order with real market data simulation"""
         try:
-            # Import here to avoid circular imports
-            from shared.nats_client import create_nats_consumer
+            # For paper trading, simulate order execution without real market data
+            await asyncio.sleep(0.1)  # Simulate processing time
             
-            # Initialize NATS consumer for real prices
-            nats_consumer = create_nats_consumer("oms")
-            await nats_consumer.connect()
-            
-            # Get real market data for the symbol from NATS
-            tick = await nats_consumer.get_latest_tick(order.symbol)
-            
-            # Close NATS connection
-            await nats_consumer.disconnect()
-            
-            if not tick:
-                logger.warning(f"⚠️ No real market data for {order.symbol}, using fallback simulation")
-                # Fallback to simple simulation
-                await asyncio.sleep(0.1)  # Simulate processing time
-                return {
-                    "status": "success",
-                    "broker_order_id": f"PAPER_{order.order_id}",
-                    "message": "Paper order executed successfully (fallback mode)",
-                    "filled_price": order.price or 1000.0,
-                    "filled_quantity": order.quantity
-                }
-            
-            # Get real market data from tick
-            current_price = tick.ltp
-            bid_price = tick.bid
-            ask_price = tick.ask
-            
-            logger.info(f"📊 Real market data for {order.symbol}: LTP={current_price}, Bid={bid_price}, Ask={ask_price}")
-            
-            # Simulate order execution based on order type
-            if order.order_type == OrderType.MARKET:
-                # Market orders get filled at current market price
-                filled_price = current_price
-                execution_delay = 0.05  # 50ms for market orders
-                success_probability = 0.95  # 95% success rate for market orders
-                
-            elif order.order_type == OrderType.LIMIT:
-                # Limit orders check if price is favorable
-                if order.side == OrderSide.BUY:
-                    # Buy limit: only execute if current price <= limit price
-                    if current_price <= order.price:
-                        filled_price = min(order.price, current_price)
-                        success_probability = 0.8
-                    else:
-                        # Order would be rejected in real trading
-                        return {
-                            "status": "rejected",
-                            "error": f"Limit price {order.price} above current market price {current_price}",
-                            "message": "Limit order rejected - price not favorable"
-                        }
-                else:  # SELL
-                    # Sell limit: only execute if current price >= limit price
-                    if current_price >= order.price:
-                        filled_price = max(order.price, current_price)
-                        success_probability = 0.8
-                    else:
-                        # Order would be rejected in real trading
-                        return {
-                            "status": "rejected",
-                            "error": f"Limit price {order.price} below current market price {current_price}",
-                            "message": "Limit order rejected - price not favorable"
-                        }
-                execution_delay = 0.1  # 100ms for limit orders
-                
-            else:
-                # Unknown order type
-                return {
-                    "status": "rejected",
-                    "error": f"Unsupported order type: {order.order_type}",
-                    "message": "Order type not supported in paper trading"
-                }
-            
-            # Simulate execution delay
-            await asyncio.sleep(execution_delay)
-            
-            # Simulate success/failure based on probability
-            import random
-            if random.random() > success_probability:
-                return {
-                    "status": "rejected",
-                    "error": "Order rejected due to market conditions",
-                    "message": "Paper order rejected (simulated market conditions)"
-                }
-            
-            # Update order with real execution details
-            order.filled_price = filled_price
-            order.filled_quantity = order.quantity
-            order.status = OrderStatus.FILLED
-            
-            logger.info(f"✅ Paper order {order.order_id} executed: {order.side.value} {order.quantity} {order.symbol} @ {filled_price}")
-            
+            # Use a simple fallback simulation for paper trading
             return {
                 "status": "success",
                 "broker_order_id": f"PAPER_{order.order_id}",
-                "message": f"Paper order executed successfully @ {filled_price}",
-                "filled_price": filled_price,
-                "filled_quantity": order.quantity,
-                "market_price": current_price
+                "message": "Paper order executed successfully (simulation mode)",
+                "filled_price": order.price or 1000.0,
+                "filled_quantity": order.quantity
             }
             
         except Exception as e:

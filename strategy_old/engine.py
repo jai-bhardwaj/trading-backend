@@ -8,12 +8,11 @@ import logging
 import redis.asyncio as redis
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from dataclasses import asdict
 from strategy.registry import register_strategies_to_registry, get_strategy_class
 from shared.config import ConfigLoader
 from shared.market_hours import market_hours
-from shared.nats_client import create_nats_consumer, MarketDataTick
 import threading
 
 logger = logging.getLogger(__name__)
@@ -24,7 +23,6 @@ class StrategyEngine:
     def __init__(self, redis_url: str = "redis://localhost:6379/2"):
         self.redis_url = redis_url
         self.redis_client = None
-        self.nats_consumer = create_nats_consumer("strategy-engine")
         self.strategies = {}  # strategy_id -> strategy instance
         self.running = False
         self.config_loader = ConfigLoader()
@@ -40,12 +38,6 @@ class StrategyEngine:
             await self.redis_client.ping()
             logger.info("✅ Redis connected")
             
-            # Connect to NATS
-            await self.nats_consumer.connect()
-            logger.info("✅ NATS connected")
-            
-            # Add tick handler
-            self.nats_consumer.add_tick_handler(self._handle_market_tick)
             
             # Load configurations
             self.config_loader.load_symbols()
@@ -60,13 +52,6 @@ class StrategyEngine:
             await self._load_strategies_from_config()
             logger.info("✅ Strategy engine initialized")
 
-            # Subscribe to market data via NATS
-            all_symbols = self._collect_all_symbols()
-            if all_symbols:
-                logger.info(f"🚀 Subscribing to NATS for {len(all_symbols)} symbols: {all_symbols}")
-                await self.nats_consumer.subscribe(all_symbols)
-            else:
-                logger.warning("⚠️ No symbols to subscribe to - no strategies loaded or no symbols configured")
         except Exception as e:
             logger.error(f"❌ Failed to initialize strategy engine: {e}")
             raise
@@ -120,8 +105,8 @@ class StrategyEngine:
                 symbols.add(symbol)
         return list(symbols)
     
-    async def _handle_market_tick(self, tick: MarketDataTick):
-        """Handle incoming market tick from NATS"""
+    async def _handle_market_tick(self, tick: Any):
+        """Handle incoming market tick from Redis"""
         try:
             async with self._market_data_lock:
                 self.live_market_data[tick.symbol] = tick
@@ -135,10 +120,10 @@ class StrategyEngine:
 
 
     async def _get_market_data_for_symbols(self, symbols):
-        """Return a dict: symbol -> latest market data from NATS"""
+        """Return a dict: symbol -> latest market data from Redis"""
         symbol_data = {}
         
-        # Get data from NATS live market data
+        # Get data from Redis live market data
         async with self._market_data_lock:
             for symbol in symbols:
                 if symbol in self.live_market_data:

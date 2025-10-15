@@ -32,8 +32,6 @@ numpy==1.24.3
 httpx==0.25.2
 requests==2.31.0
 
-# NATS
-nats-py==2.6.0
 
 # Async support
 asyncio-mqtt==0.16.1

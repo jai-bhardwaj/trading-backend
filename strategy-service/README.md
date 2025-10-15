@@ -214,7 +214,7 @@ This test:
 The old `strategy/` folder has been archived to `strategy_old/`. The new architecture provides:
 
 - **Better Isolation**: Each strategy runs in its own container
-- **Redis Streams**: More reliable than NATS for market data
+- **Redis Streams**: Reliable market data streaming
 - **Simplified Base Class**: Easier to implement new strategies
 - **Built-in Indicators**: No need to implement technical indicators
 - **Health Monitoring**: Built-in health checks and statistics
