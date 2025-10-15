@@ -107,7 +107,9 @@ services:
 
   # Market Data Service
   market-data-service:
-    image: test-market-data-service
+    build:
+      context: .
+      dockerfile: market-data-service/Dockerfile
     container_name: market-data-service
     ports:
       - "8001:8001"
@@ -153,54 +155,232 @@ services:
       retries: 3
       start_period: 40s
 
-  # Trading Engine (Strategy Engine + Order Manager)
-  trading-engine:
+  # RSI DMI Strategy Service
+  rsi-dmi-strategy:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: trading-engine
+      dockerfile: strategy-service/strategies/rsi_dmi_strategy/Dockerfile
+    container_name: rsi-dmi-strategy
     environment:
-      # Database Configuration
-      DATABASE_URL: postgresql+psycopg2://trading_user:trading_password@postgres:5432/trading_db
+      # Strategy Configuration
+      STRATEGY_ID: "rsi_dmi_strategy"
+      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      
+      # Strategy Parameters
+      ENTRY_RSI_UL: "70"
+      DI_UL: "25"
+      RSI_LL: "30"
+      CAPITAL: "100000"
+      MAX_QUANTITY: "1000"
+      MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: redis://redis:6379/2
+      REDIS_URL: "redis://redis:6379"
       
-      # NATS Configuration
-      NATS_URL: nats://nats:4222
+      # Consumer Configuration
+      CONSUMER_GROUP: "strategy_consumers"
+      SIGNAL_CHANNEL: "strategy_signals"
       
-      # Trading Configuration
-      PAPER_TRADING: "true"
-      STRATEGY_EXECUTION_INTERVAL: "5"
-      
-      # Market Hours Configuration
-      MARKET_HOURS_ALWAYS_OPEN: "false"
-      MARKET_HOURS_TEST_MODE: "false"
+      # Strategy Status
+      ENABLED: "true"
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
-      
-      # Angel One API Credentials (set these in .env file)
-      ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
-      ANGEL_ONE_CLIENT_CODE: ${ANGEL_ONE_CLIENT_CODE:-your_client_code_here}
-      ANGEL_ONE_PASSWORD: ${ANGEL_ONE_PASSWORD:-your_password_here}
-      ANGEL_ONE_TOTP_SECRET: ${ANGEL_ONE_TOTP_SECRET:-your_totp_secret_here}
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
     depends_on:
       redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      nats:
         condition: service_healthy
       market-data-service:
         condition: service_healthy
     networks:
       - trading-network
     restart: unless-stopped
-    command: ["python", "/app/market-data-service/main.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # BTST Momentum Strategy Service
+  btst-momentum-strategy:
+    build:
+      context: .
+      dockerfile: strategy-service/strategies/btst_momentum_strategy/Dockerfile
+    container_name: btst-momentum-strategy
+    environment:
+      # Strategy Configuration
+      STRATEGY_ID: "btst_momentum_strategy"
+      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      
+      # Strategy Parameters
+      MOMENTUM_PERCENTAGE: "4.0"
+      HOLDING_DAYS: "1"
+      CAPITAL: "100000"
+      MAX_QUANTITY: "1000"
+      MIN_QUANTITY: "1"
+      
+      # Redis Configuration
+      REDIS_URL: "redis://redis:6379"
+      
+      # Consumer Configuration
+      CONSUMER_GROUP: "strategy_consumers"
+      SIGNAL_CHANNEL: "strategy_signals"
+      
+      # Strategy Status
+      ENABLED: "true"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+      market-data-service:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # RSI DMI Intraday Strategy Service
+  rsi-dmi-intraday-strategy:
+    build:
+      context: .
+      dockerfile: strategy-service/strategies/rsi_dmi_intraday_strategy/Dockerfile
+    container_name: rsi-dmi-intraday-strategy
+    environment:
+      # Strategy Configuration
+      STRATEGY_ID: "rsi_dmi_intraday_strategy"
+      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      
+      # Strategy Parameters
+      ENTRY_RSI_UL: "70"
+      DI_UL: "25"
+      RSI_LL: "30"
+      CAPITAL: "100000"
+      MAX_QUANTITY: "1000"
+      MIN_QUANTITY: "1"
+      
+      # Redis Configuration
+      REDIS_URL: "redis://redis:6379"
+      
+      # Consumer Configuration
+      CONSUMER_GROUP: "strategy_consumers"
+      SIGNAL_CHANNEL: "strategy_signals"
+      
+      # Strategy Status
+      ENABLED: "true"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+      market-data-service:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Swing Momentum Strategy Service
+  swing-momentum-strategy:
+    build:
+      context: .
+      dockerfile: strategy-service/strategies/swing_momentum_strategy/Dockerfile
+    container_name: swing-momentum-strategy
+    environment:
+      # Strategy Configuration
+      STRATEGY_ID: "swing_momentum_strategy"
+      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      
+      # Strategy Parameters
+      MOMENTUM_PERCENTAGE: "4.0"
+      HOLDING_DAYS: "2"
+      CAPITAL: "100000"
+      MAX_QUANTITY: "1000"
+      MIN_QUANTITY: "1"
+      
+      # Redis Configuration
+      REDIS_URL: "redis://redis:6379"
+      
+      # Consumer Configuration
+      CONSUMER_GROUP: "strategy_consumers"
+      SIGNAL_CHANNEL: "strategy_signals"
+      
+      # Strategy Status
+      ENABLED: "true"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+      market-data-service:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Test Strategy Service
+  test-strategy:
+    build:
+      context: .
+      dockerfile: strategy-service/strategies/test_strategy/Dockerfile
+    container_name: test-strategy
+    environment:
+      # Strategy Configuration
+      STRATEGY_ID: "test_strategy"
+      SYMBOLS: "RELIANCE,TCS,INFY"
+      
+      # Strategy Parameters
+      TEST_MODE: "true"
+      SIGNAL_INTERVAL: "10"
+      CAPITAL: "100000"
+      MAX_QUANTITY: "1000"
+      MIN_QUANTITY: "1"
+      
+      # Redis Configuration
+      REDIS_URL: "redis://redis:6379"
+      
+      # Consumer Configuration
+      CONSUMER_GROUP: "strategy_consumers"
+      SIGNAL_CHANNEL: "strategy_signals"
+      
+      # Strategy Status
+      ENABLED: "true"
+      
+      # Logging Configuration
+      LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+      market-data-service:
+        condition: service_healthy
+    networks:
+      - trading-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   redis_data:
