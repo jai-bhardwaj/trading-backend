@@ -17,6 +17,7 @@ import re
 import json
 from models_clean import Order as DBOrder, UserStrategyConfig
 from shared.database import get_db_session
+from .mock_broker import MockBroker
 
 load_dotenv()
 
@@ -326,13 +327,13 @@ class OrderManager:
     
     def __init__(self, paper_trading: bool = True):
         self.paper_trading = paper_trading
-        self.broker = None if paper_trading else AngelOneBroker()
+        self.broker = MockBroker() if paper_trading else AngelOneBroker()
         self.orders = {}
         
     async def initialize(self):
         """Initialize order manager"""
         try:
-            if not self.paper_trading and self.broker:
+            if self.broker:
                 await self.broker.initialize()
             logger.info("✅ Order manager initialized")
         except Exception as e:
@@ -455,7 +456,7 @@ class OrderManager:
             
             # Execute order
             if self.paper_trading:
-                result = await self._execute_paper_order(order)
+                result = await self.broker.place_order(order)
             else:
                 result = await self.broker.place_order(order)
             
@@ -464,13 +465,9 @@ class OrderManager:
                 order.status = OrderStatus.PLACED
                 order.broker_order_id = result.get("broker_order_id")
                 
-                # Update filled details if available
-                if "filled_price" in result:
-                    order.filled_price = result["filled_price"]
-                if "filled_quantity" in result:
-                    order.filled_quantity = result["filled_quantity"]
-                
-                logger.info(f"✅ Order {order.order_id} executed successfully")
+                # For mock broker, the order will be filled asynchronously
+                # We'll update the order status when it gets filled
+                logger.info(f"✅ Order {order.order_id} placed successfully")
             else:
                 order.status = OrderStatus.REJECTED
                 order.error_message = result.get("error", "Unknown error")
@@ -497,32 +494,29 @@ class OrderManager:
                 "message": "Order execution failed"
             }
     
-    async def _execute_paper_order(self, order: Order) -> Dict:
-        """Execute paper trading order with real market data simulation"""
-        try:
-            # For paper trading, simulate order execution without real market data
-            await asyncio.sleep(0.1)  # Simulate processing time
-            
-            # Use a simple fallback simulation for paper trading
-            return {
-                "status": "success",
-                "broker_order_id": f"PAPER_{order.order_id}",
-                "message": "Paper order executed successfully (simulation mode)",
-                "filled_price": order.price or 1000.0,
-                "filled_quantity": order.quantity
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error in paper order execution: {e}")
-            return {
-                "status": "error",
-                "error": str(e),
-                "message": "Paper order execution failed"
-            }
-    
     async def get_order_status(self, order_id: str) -> Optional[Order]:
         """Get order status"""
-        return self.orders.get(order_id)
+        # First check our local orders
+        local_order = self.orders.get(order_id)
+        if not local_order:
+            return None
+        
+        # If using mock broker, check for updates
+        if self.paper_trading and self.broker:
+            mock_order = self.broker.get_order_status(order_id)
+            if mock_order and mock_order.status != local_order.status:
+                # Update local order with mock broker status
+                local_order.status = mock_order.status
+                local_order.filled_price = mock_order.filled_price
+                local_order.filled_quantity = mock_order.filled_quantity
+                local_order.error_message = mock_order.error_message
+                
+                # Save updated status to database
+                self._save_order_to_db(local_order)
+                
+                logger.info(f"🔄 Updated order {order_id} status to {local_order.status.value}")
+        
+        return local_order
     
     async def get_user_orders(self, user_id: str) -> List[Order]:
         """Get orders for a user"""

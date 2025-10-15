@@ -146,7 +146,7 @@ services:
     environment:
       # Strategy Configuration
       STRATEGY_ID: "rsi_dmi_strategy"
-      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      SYMBOLS: "TCS,HDFC,ICICIBANK"
       
       # Strategy Parameters
       ENTRY_RSI_UL: "70"
@@ -195,7 +195,7 @@ services:
     environment:
       # Strategy Configuration
       STRATEGY_ID: "btst_momentum_strategy"
-      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      SYMBOLS: "TCS,HDFC,ICICIBANK"
       
       # Strategy Parameters
       MOMENTUM_PERCENTAGE: "4.0"
@@ -243,7 +243,7 @@ services:
     environment:
       # Strategy Configuration
       STRATEGY_ID: "rsi_dmi_intraday_strategy"
-      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      SYMBOLS: "TCS,HDFC,ICICIBANK"
       
       # Strategy Parameters
       ENTRY_RSI_UL: "70"
@@ -292,7 +292,7 @@ services:
     environment:
       # Strategy Configuration
       STRATEGY_ID: "swing_momentum_strategy"
-      SYMBOLS: "RELIANCE,TCS,INFY,HDFC,ICICIBANK"
+      SYMBOLS: "TCS,HDFC,ICICIBANK"
       
       # Strategy Parameters
       MOMENTUM_PERCENTAGE: "4.0"
