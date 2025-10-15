@@ -14,23 +14,27 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY market-data-service/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy service-specific files
-COPY . /app/market-data-service/
+COPY market-data-service/ /app/market-data-service/
 
-# Create necessary directories
-RUN mkdir -p /app/data /app/logs
+# Create non-root user first
+RUN useradd --create-home --shell /bin/bash marketdata
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash marketdata && \
-    chown -R marketdata:marketdata /app
+# Create necessary directories and set ownership
+RUN mkdir -p /app/data /app/market-data-service/logs && \
+    chown -R marketdata:marketdata /app && \
+    chmod -R 755 /app/market-data-service/logs
 
 # Switch to non-root user
 USER marketdata
+
+# Set working directory to market-data-service
+WORKDIR /app/market-data-service
 
 # Set Python path
 ENV PYTHONPATH=/app
