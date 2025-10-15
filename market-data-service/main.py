@@ -16,6 +16,10 @@ from typing import List, Dict
 from datetime import datetime
 from dotenv import load_dotenv
 import redis.asyncio as redis
+import sys
+import os
+sys.path.insert(0, '/app')
+from shared.timezone import get_ist_now, get_ist_timestamp
 
 # Add parent directory to path
 sys.path.insert(0, '/app')
@@ -271,8 +275,8 @@ class MarketDataRedisStreamer:
                 "ask": ask,
                 "open": open_price,
                 "close": close_price,
-                "timestamp": datetime.now().isoformat(),
-                "exchange_timestamp": datetime.fromtimestamp(tick_data.get('exchange_timestamp', 0) / 1000).isoformat() if tick_data.get('exchange_timestamp') else datetime.now().isoformat()
+                "timestamp": get_ist_timestamp(),
+                "exchange_timestamp": datetime.fromtimestamp(tick_data.get('exchange_timestamp', 0) / 1000).isoformat() if tick_data.get('exchange_timestamp') else get_ist_timestamp()
             }
             
             # Publish to Redis Stream
@@ -285,7 +289,7 @@ class MarketDataRedisStreamer:
             
             # Update stats
             self.tick_count += 1
-            self.last_tick_time = datetime.now()
+            self.last_tick_time = get_ist_now()
             
             if self.tick_count % 100 == 0:
                 logger.info(f"📊 Published {self.tick_count} ticks to Redis")

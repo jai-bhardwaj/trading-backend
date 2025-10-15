@@ -15,6 +15,7 @@ sys.path.insert(0, '/app')
 sys.path.insert(0, '/app/strategy-service')
 
 from shared.models import MarketDataTick, TradingSignal, SignalType, StrategyConfig
+from shared.timezone import get_ist_now, get_ist_timestamp
 from base.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,7 @@ class RSIDMIIntradayStrategy(BaseStrategy):
                         confidence=0.8,
                         price=current_tick.ltp,
                         quantity=self.calculate_quantity(current_tick.ltp),
-                        timestamp=datetime.now(),
+                        timestamp=get_ist_now(),
                         metadata={
                             'strategy': 'RSI DMI Intraday',
                             'last_rsi': last_rsi,
@@ -121,7 +122,7 @@ class RSIDMIIntradayStrategy(BaseStrategy):
                         confidence=0.8,
                         price=current_tick.ltp,
                         quantity=self.calculate_quantity(current_tick.ltp),
-                        timestamp=datetime.now(),
+                        timestamp=get_ist_now(),
                         metadata={
                             'strategy': 'RSI DMI Intraday',
                             'last_rsi': last_rsi,
@@ -144,7 +145,7 @@ class RSIDMIIntradayStrategy(BaseStrategy):
         """Check if candle is from today"""
         try:
             candle_time = candle.timestamp
-            today = datetime.now().date()
+            today = get_ist_now().date()
             return candle_time.date() == today
             
         except Exception as e:

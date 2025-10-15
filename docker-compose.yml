@@ -10,6 +10,8 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    environment:
+      - TZ=Asia/Kolkata
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -26,6 +28,7 @@ services:
       POSTGRES_DB: trading_db
       POSTGRES_USER: trading_user
       POSTGRES_PASSWORD: trading_password
+      TZ: Asia/Kolkata
     ports:
       - "5432:5432"
     volumes:
@@ -64,6 +67,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
       
       # Angel One API Credentials (set these in .env file)
       ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
@@ -104,6 +110,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
       
       # Angel One API Credentials (set these in .env file)
       ANGEL_ONE_API_KEY: ${ANGEL_ONE_API_KEY:-your_api_key_here}
@@ -148,7 +157,7 @@ services:
       MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://redis:6379/2"
       
       # Consumer Configuration
       CONSUMER_GROUP: "strategy_consumers"
@@ -159,6 +168,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
     depends_on:
       redis:
         condition: service_healthy
@@ -168,7 +180,7 @@ services:
       - trading-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/2'); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -193,7 +205,7 @@ services:
       MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://redis:6379/2"
       
       # Consumer Configuration
       CONSUMER_GROUP: "strategy_consumers"
@@ -204,6 +216,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
     depends_on:
       redis:
         condition: service_healthy
@@ -213,7 +228,7 @@ services:
       - trading-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/2'); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -239,7 +254,7 @@ services:
       MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://redis:6379/2"
       
       # Consumer Configuration
       CONSUMER_GROUP: "strategy_consumers"
@@ -250,6 +265,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
     depends_on:
       redis:
         condition: service_healthy
@@ -259,7 +277,7 @@ services:
       - trading-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/2'); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -284,7 +302,7 @@ services:
       MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://redis:6379/2"
       
       # Consumer Configuration
       CONSUMER_GROUP: "strategy_consumers"
@@ -295,6 +313,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
     depends_on:
       redis:
         condition: service_healthy
@@ -304,7 +325,7 @@ services:
       - trading-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/2'); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -329,7 +350,7 @@ services:
       MIN_QUANTITY: "1"
       
       # Redis Configuration
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://redis:6379/2"
       
       # Consumer Configuration
       CONSUMER_GROUP: "strategy_consumers"
@@ -340,6 +361,9 @@ services:
       
       # Logging Configuration
       LOG_LEVEL: "INFO"
+      
+      # Timezone Configuration
+      TZ: Asia/Kolkata
     depends_on:
       redis:
         condition: service_healthy
@@ -349,7 +373,7 @@ services:
       - trading-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/2'); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3

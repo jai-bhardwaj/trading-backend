@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Callable, Any
 import redis.asyncio as redis
 from shared.models import MarketDataTick
+from shared.timezone import get_ist_now, get_ist_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class MarketDataConsumer:
                     mkstream=True
                 )
                 logger.info(f"✅ Created consumer group for {stream_name}")
-            except redis.exceptions.ResponseError as e:
+            except Exception as e:
                 if "BUSYGROUP" in str(e):
                     logger.info(f"✅ Consumer group already exists for {stream_name}")
                 else:
@@ -166,7 +167,7 @@ class MarketDataConsumer:
             try:
                 timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
             except:
-                timestamp = datetime.now()
+                timestamp = get_ist_now()
             
             try:
                 exchange_timestamp = datetime.fromisoformat(exchange_timestamp_str.replace('Z', '+00:00'))

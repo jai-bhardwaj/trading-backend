@@ -15,12 +15,13 @@ RUN apt-get update && apt-get install -y \
 # Copy base strategy framework
 COPY strategy-service/base/ /app/strategy-service/base/
 COPY strategy-service/shared/ /app/strategy-service/shared/
+COPY shared/ /app/shared/
 
 # Copy strategy-specific files
 COPY strategy-service/strategies/rsi_dmi_strategy/ /app/strategy-service/strategies/rsi_dmi_strategy/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir redis==6.4.0
+RUN pip install --no-cache-dir redis==6.4.0 pytz==2025.2
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash strategy && \

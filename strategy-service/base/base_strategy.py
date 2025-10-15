@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from shared.models import MarketDataTick, TradingSignal, SignalType, StrategyConfig, StrategyStats
+from shared.timezone import get_ist_now, get_ist_timestamp
 from base.market_data_consumer import MarketDataConsumer
 from base.signal_publisher import SignalPublisher
 from base.indicators import TechnicalIndicators
@@ -159,7 +160,7 @@ class BaseStrategy(ABC):
             success = await self.signal_publisher.publish_signal(signal)
             if success:
                 self.stats.signals_generated += 1
-                self.stats.last_signal_time = datetime.now()
+                self.stats.last_signal_time = get_ist_now()
                 logger.info(f"📊 Strategy {self.strategy_id} generated signal: {signal.symbol} {signal.signal_type.value}")
             else:
                 logger.error(f"❌ Failed to publish signal for {self.strategy_id}")
@@ -209,7 +210,7 @@ class BaseStrategy(ABC):
             "running": self.running,
             "is_healthy": self.stats.is_healthy,
             "symbols": self.symbols,
-            "uptime": (datetime.now() - self.stats.uptime_start).total_seconds(),
+            "uptime": (get_ist_now() - self.stats.uptime_start).total_seconds(),
             "last_error": self.stats.last_error
         }
     

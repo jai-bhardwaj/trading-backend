@@ -15,6 +15,7 @@ sys.path.insert(0, '/app')
 sys.path.insert(0, '/app/strategy-service')
 
 from shared.models import MarketDataTick, TradingSignal, SignalType, StrategyConfig
+from shared.timezone import get_ist_now, get_ist_timestamp
 from base.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class SwingMomentumStrategy(BaseStrategy):
                         confidence=0.8,
                         price=current_tick.ltp,
                         quantity=self.calculate_quantity(current_tick.ltp),
-                        timestamp=datetime.now(),
+                        timestamp=get_ist_now(),
                         metadata={
                             'strategy': 'Swing Momentum',
                             'momentum_percentage': momentum,

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Any
 import redis.asyncio as redis
 from shared.models import TradingSignal, SignalType
+from shared.timezone import get_ist_now, get_ist_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class SignalPublisher:
                 "confidence": signal.confidence,
                 "price": signal.price,
                 "quantity": signal.quantity,
-                "timestamp": signal.timestamp.isoformat(),
+                "timestamp": signal.timestamp.isoformat() if isinstance(signal.timestamp, datetime) else signal.timestamp,
                 "metadata": signal.metadata
             }
             
